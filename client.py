@@ -172,8 +172,8 @@ def main():
     args = parser.parse_args()
     file_name = os.path.abspath(args.file_name)
     level = logging.DEBUG if args.verbose > 0 else logging.INFO
-    port = args.port
-    server = args.server
+    port = args.port[0]
+    server = args.server[0]
 
     coloredlogs.install(level)
     logger.setLevel(level)
