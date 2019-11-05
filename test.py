@@ -15,9 +15,9 @@ SUPPORTED_MODES = {
     modes.GCM.name: modes.GCM
 }
 
-def makeSymEncryptor(key: bytes, algorithm_name: str = "AES", mode_name: str = "CBC", iv = None, nonce = None, tag = None, backend = default_backend()):
+def buildSymmectricCypher(key: bytes, algorithm_name: str = "AES", mode_name: str = "CBC", iv = None, nonce = None, tag = None, backend = default_backend()):
     if not algorithm_name in SUPPORTED_ALGORITHMS:
-        raise f"{algorithm_name} is not supported"
+        raise ValueError(f"{algorithm_name} is not supported")
 
     algorithm_class = SUPPORTED_ALGORITHMS[algorithm_name]
 
@@ -25,7 +25,7 @@ def makeSymEncryptor(key: bytes, algorithm_name: str = "AES", mode_name: str = "
         algorithm = algorithm_class(key)
 
         if not mode_name in SUPPORTED_MODES:
-            raise f"{mode_name} is not supported"
+            raise ValueError(f"{mode_name} is not supported")
 
         mode_class = SUPPORTED_MODES[mode_name]
 
