@@ -22,13 +22,13 @@ def generateKeyPair():
 
     return private_key,public_key
 
-def buildPeerPublicKey(peer_public_bytes: bytes):
+def buildPeerPublicKey(peer_public_bytes: bytes): #public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
     return serialization.load_der_public_key(
         data=peer_public_bytes,
         backend=default_backend()
     )
 
-def derivateSharedKey(private_key: ec.EllipticCurvePrivateKey,peer_public_key: ec.EllipticCurvePublicKey, digest_algorithm_name = "sha512"):
+def deriveSharedKey(private_key: ec.EllipticCurvePrivateKey,peer_public_key: ec.EllipticCurvePublicKey, digest_algorithm_name = "sha512"):
     if not digest_algorithm_name in SUPPORTED_HASHES:
         raise ValueError(f"{digest_algorithm_name} is not supported")
 

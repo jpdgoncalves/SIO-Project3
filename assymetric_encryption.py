@@ -9,7 +9,7 @@ SUPPORTED_HASHES = {
     hashes.SHA512.name : hashes.SHA512
 }
 
-def buildDigestFunction(algorithm_name = "SHA512",backend = default_backend()):
+def buildDigestFunction(algorithm_name = "sha512",backend = default_backend()):
     if not algorithm_name in SUPPORTED_HASHES:
         raise ValueError(f"{algorithm_name} is not supported")
 

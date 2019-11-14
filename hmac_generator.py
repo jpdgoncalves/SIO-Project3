@@ -15,5 +15,5 @@ def buildHMAC(key: bytes,hash_algorithm_name: str="sha512"):
     return hmac.HMAC(
         key=key,
         algorithm=SUPPORTED_HASHES[hash_algorithm_name](),
-        backend=default_backend
+        backend=default_backend()
     )

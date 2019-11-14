@@ -6,6 +6,10 @@ import coloredlogs, logging
 import re
 import os
 from aio_tcpserver import tcp_server
+from symmetric_encryption import buildSymmetricCypher
+from assymmetric_encryption import *
+from handshake_ec import *
+from hmac_generator import buildHMAC
 
 logger = logging.getLogger('root')
 
@@ -31,7 +35,7 @@ class ClientHandler(asyncio.Protocol):
 		self.buffer = ''
 		self.peername = ''
 
-	def connection_made(self, transport) -> None:
+	def connection_made(self, transport) -> None:	#Override from asyncio.BaseProtocol
 		"""
 		Called when a client connects
 
@@ -44,7 +48,7 @@ class ClientHandler(asyncio.Protocol):
 		self.state = STATE_CONNECT
 
 
-	def data_received(self, data: bytes) -> None:
+	def data_received(self, data: bytes) -> None:	#Override from asyncio.Protocol
 		"""
         Called when data is received from the client.
         Stores the data in the buffer
@@ -68,7 +72,7 @@ class ClientHandler(asyncio.Protocol):
 			idx = self.buffer.find('\r\n')
 
 		if len(self.buffer) > 4096 * 1024 * 1024:  # If buffer is larger than 4M
-			logger.warning('Buffer to large')
+			logger.warning('Buffer too large')
 			self.buffer = ''
 			self.transport.close()
 

@@ -15,7 +15,7 @@ SUPPORTED_MODES = {
     modes.GCM.name: modes.GCM
 }
 
-def buildSymmectricCypher(key: bytes, algorithm_name: str = "AES", mode_name: str = "CBC", iv = None, nonce = None, tag = None, backend = default_backend()):
+def buildSymmetricCypher(key: bytes, algorithm_name: str = "AES", mode_name: str = "CBC", iv = None, nonce = None, tag = None, backend = default_backend()):
     if not algorithm_name in SUPPORTED_ALGORITHMS:
         raise ValueError(f"{algorithm_name} is not supported")
 

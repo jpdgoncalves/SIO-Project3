@@ -4,6 +4,10 @@ import base64
 import argparse
 import coloredlogs, logging
 import os
+from symmetric_encryption import buildSymmetricCypher
+from assymmetric_encryption import *
+from handshake_ec import *
+from hmac_generator import buildHMAC
 
 logger = logging.getLogger('root')
 
@@ -30,7 +34,7 @@ class ClientProtocol(asyncio.Protocol):
         self.state = STATE_CONNECT  # Initial State
         self.buffer = ''  # Buffer to receive data chunks
 
-    def connection_made(self, transport) -> None:
+    def connection_made(self, transport) -> None:	#Override from asyncio.BaseProtocol
         """
         Called when the client connects.
 
@@ -47,7 +51,7 @@ class ClientProtocol(asyncio.Protocol):
         self.state = STATE_OPEN
 
 
-    def data_received(self, data: str) -> None:
+    def data_received(self, data: str) -> None:		#Override from asyncio.Protocol
         """
         Called when data is received from the server.
         Stores the data in the buffer
@@ -112,7 +116,7 @@ class ClientProtocol(asyncio.Protocol):
         self.transport.close()
         self.loop.stop()
 
-    def connection_lost(self, exc):
+    def connection_lost(self, exc):		#Override from asyncio.BaseProtocol
         """
         Connection was lost for some reason.
         :param exc:
