@@ -22,6 +22,12 @@ def generateKeyPair():
 
     return private_key,public_key
 
+def getPeerPublicBytesFromKey(public_key: ec.EllipticCurvePublicKey, encoding=serialization.Encoding.DER, der_format=serialization.PublicFormat.SubjectPublicKeyInfo) -> bytes:
+    return public_key.public_bytes(
+        encoding=encoding,
+        format=der_format
+    )
+
 def buildPeerPublicKey(peer_public_bytes: bytes): #public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
     return serialization.load_der_public_key(
         data=peer_public_bytes,

@@ -1,8 +1,11 @@
 
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.hashes import HashAlgorithm
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric.padding import AsymmetricPadding,PKCS1v15
 from cryptography.hazmat.primitives import serialization
+from cryptography.exceptions import InvalidSignature
 
 SUPPORTED_HASHES = {
     hashes.SHA256.name : hashes.SHA256,
@@ -39,18 +42,39 @@ def generateAssymetricKey():
 
     return private_bytes,public_bytes
 
-def getPrivateKeyFromBytes(private_bytes: bytes):
+def getPublicBytesFromKey(public_key: rsa.RSAPublicKey, encoding=serialization.Encoding.PEM, ser_format=serialization.PublicFormat.SubjectPublicKeyInfo) -> bytes:
+    return public_key.public_bytes(
+        encoding=encoding,
+        format=ser_format
+    )
+
+def getPrivateKeyFromBytes(private_bytes: bytes) -> rsa.RSAPrivateKey:
     return serialization.load_pem_private_key(
         data=private_bytes,
         password=None,
         backend=default_backend()
     )
 
-def getPublicKeyFromBytes(public_bytes: bytes):
+def getPublicKeyFromBytes(public_bytes: bytes) -> rsa.RSAPublicKey:
     return serialization.load_pem_public_key(
         data=public_bytes,
         backend=default_backend()
     )
+
+def getSignature(private_key: rsa.RSAPrivateKey, data: bytes, padding: AsymmetricPadding=PKCS1v15(), algorithm: HashAlgorithm=buildDigestFunction()) -> bytes:
+    return private_key.sign(
+        data,
+        padding,
+        algorithm
+    )
+
+def verifySignature(public_key: rsa.RSAPublicKey, signature: bytes, data: bytes, padding: AsymmetricPadding=PKCS1v15(), algorithm: HashAlgorithm=buildDigestFunction()) -> bool:
+    try:
+        public_key.verify(signature,data,padding,algorithm)
+    except InvalidSignature:
+        return False
+    return True
+
 
 '''
 Key exchange algorithms come into play in shared_key message signature algorithms such as HMAC or CMAC.
