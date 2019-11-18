@@ -75,6 +75,11 @@ def verifySignature(public_key: rsa.RSAPublicKey, signature: bytes, data: bytes,
         return False
     return True
 
+def encrypt(public_key: rsa.RSAPublicKey, data: bytes, padding: AsymmetricPadding=PKCS1v15()) -> bytes:
+    return public_key.encrypt(data,padding)
+
+def decrypt(private_key: rsa.RSAPrivateKey, data: bytes, padding: AsymmetricPadding=PKCS1v15()) -> bytes:
+    return private_key.decrypt(data,padding)
 
 '''
 Key exchange algorithms come into play in shared_key message signature algorithms such as HMAC or CMAC.
