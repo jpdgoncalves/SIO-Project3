@@ -4,17 +4,19 @@ import base64
 import argparse
 import coloredlogs, logging
 import os
-from symmetric_encryption import buildSymmetricCypher
-from assymmetric_encryption import *
-from handshake_ec import *
+import symmetric_encryption
+import assymetric_encryption
+import handshake_ec
 from hmac_generator import buildHMAC
 
 logger = logging.getLogger('root')
 
 STATE_CONNECT = 0
-STATE_OPEN = 1
-STATE_DATA = 2
-STATE_CLOSE = 3
+STATE_NEGOTIATE = 1
+STATE_OPEN = 3
+STATE_DATA = 4
+STATE_ROTATE = 5
+STATE_CLOSE = 6
 
 
 class ClientProtocol(asyncio.Protocol):
@@ -30,9 +32,15 @@ class ClientProtocol(asyncio.Protocol):
         """
 
         self.file_name = file_name
+        self.file = None
+        self.file_end = False
         self.loop = loop
         self.state = STATE_CONNECT  # Initial State
         self.buffer = ''  # Buffer to receive data chunks
+        self.key_exchange_algorithm = "DH"
+        self.cipher_algorithm = "AES"
+        self.cipher_mode = "CBC"
+        self.digest_algorithm = "SHA512"
 
     def connection_made(self, transport) -> None:	#Override from asyncio.BaseProtocol
         """
@@ -45,10 +53,11 @@ class ClientProtocol(asyncio.Protocol):
 
         logger.debug('Connected to Server')
         
-        message = {'type': 'OPEN', 'file_name': self.file_name}
-        self._send(message)
 
-        self.state = STATE_OPEN
+        message = {'type': 'NEGOTIATE', 'proposal': self._get_proposal()}
+
+        self.state = STATE_NEGOTIATE
+        self._send(message)
 
 
     def data_received(self, data: str) -> None:		#Override from asyncio.Protocol
@@ -97,17 +106,36 @@ class ClientProtocol(asyncio.Protocol):
 
         mtype = message.get('type', None)
 
+        if mtype == 'SECURE':
+            message = self.unsecure(message)
+            mtype = message.get('type', None)
+
         if mtype == 'OK':  # Server replied OK. We can advance the state
-            if self.state == STATE_OPEN:
+            if self.state == STATE_NEGOTIATE:
+                logger.info("Negotiations sucessfull. Sending peer key.")
+                self.exchange_key()
+            elif self.state == STATE_ROTATE:
+                logger.info("Rotating keys")
+            elif self.state == STATE_OPEN:
                 logger.info("Channel open")
-                self.send_file(self.file_name)
+                self.send_file_portion()
             elif self.state == STATE_DATA:  # Got an OK during a message transfer.
-                # Reserved for future use
-                pass
+                logger.info("Sending data")
+                self.send_file_portion()
+            elif self.state == STATE_CLOSE:
+                logger.info("Closing Server")
+                self.send_close()
             else:
                 logger.warning("Ignoring message from server")
             return
-
+        elif mtype == 'EXCHANGE':
+            if self.state == STATE_NEGOTIATE:
+                logger.info("Received peer key from server.")
+                self.derive_key(message)
+                self.send_secure_open()
+                return
+            else:
+                logger.warning("Invalid state for this type of message. Aborting")
         elif mtype == 'ERROR':
             logger.warning("Got error from server: {}".format(message.get('data', None)))
         else:
@@ -124,8 +152,48 @@ class ClientProtocol(asyncio.Protocol):
         """
         logger.info('The server closed the connection')
         self.loop.stop()
+    
+    def exchange_key(self):
+        logger.info('Exchanging key with server')
 
-    def send_file(self, file_name: str) -> None:
+        dh_private_key, dh_public_key = handshake_ec.generateKeyPair()
+        dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
+
+        message = {
+            'type' : 'EXCHANGE',
+            'peer_key' : base64.b64encode(dh_public_bytes).decode()
+        }
+
+        self.dh_private_key = dh_private_key
+        self._send(message)
+    
+    def derive_key(self,message: dict):
+        logger.info("Deriving key")
+
+        if not "peer_key" in message:
+            logger.warning("No peer key found. Aborting")
+            self.transport.close()
+            self.loop.stop()
+
+        dh_peer_public_bytes = base64.b64decode( message["peer_key"].encode() )
+        dh_peer_public_key = handshake_ec.buildPeerPublicKey(dh_peer_public_bytes)
+
+        self.share_key = handshake_ec.deriveSharedKey(self.dh_private_key, dh_peer_public_key)
+    
+    def send_secure_open(self):
+
+        message = {'type' : 'OPEN', 'file_name': self.file_name}
+
+        secure_message = {
+            'type' : 'SECURE',
+            'payload' : json.dumps(message)
+        }
+
+        self.file = open(self.file_name, "rb")
+        self.state = STATE_OPEN
+        self._send(secure_message)
+
+    def send_file_portion(self) -> None:
         """
         Sends a file to the server.
         The file is read in chunks, encoded to Base64 and sent as part of a DATA JSON message
@@ -133,7 +201,7 @@ class ClientProtocol(asyncio.Protocol):
         :return:  None
         """
 
-        with open(file_name, 'rb') as f:
+        """ with open(self.file_name, 'rb') as f:
             message = {'type': 'DATA', 'data': None}
             read_size = 16 * 60
             while True:
@@ -146,7 +214,40 @@ class ClientProtocol(asyncio.Protocol):
 
             self._send({'type': 'CLOSE'})
             logger.info("File transferred. Closing transport")
-            self.transport.close()
+            self.transport.close() """
+        message = {'type' : 'DATA', 'data': None}
+        read_size = 16*60
+        data = self.file.read(read_size)
+        message['data'] = base64.b64encode(data).decode()
+        secure_message = self.secure(message)
+        
+        if len(data) != read_size:
+            self.state = STATE_CLOSE
+        else:
+            self.state = STATE_DATA
+        self._send(secure_message)
+    
+    def send_close(self):
+        message = {'type' : 'CLOSE'}
+        secure_message = self.secure(message)
+        self._send(secure_message)
+    
+    def _get_proposal(self) -> str:
+        proposal = self.key_exchange_algorithm + "_" + self.cipher_algorithm
+        proposal += "_" + self.cipher_mode if len(self.cipher_mode) != 0 else ""
+        proposal += "_" + self.digest_algorithm
+        return proposal
+    
+    def secure(self,message: dict) -> dict:
+        secure_message = {
+			'type' : 'SECURE',
+			'payload' : json.dumps(message)
+		}
+        return secure_message
+    
+    def unsecure(self, secure_message: dict) -> dict:
+        unsecure_message = json.loads( secure_message["payload"] )
+        return unsecure_message
 
     def _send(self, message: str) -> None:
         """
@@ -175,9 +276,9 @@ def main():
 
     args = parser.parse_args()
     file_name = os.path.abspath(args.file_name)
-    level = logging.DEBUG if args.verbose > 0 else logging.INFO
-    port = args.port[0]
-    server = args.server[0]
+    level = logging.DEBUG if args.verbose == 0 else logging.INFO
+    port = args.port
+    server = args.server
 
     coloredlogs.install(level)
     logger.setLevel(level)

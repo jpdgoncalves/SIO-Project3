@@ -48,6 +48,13 @@ def getPublicBytesFromKey(public_key: rsa.RSAPublicKey, encoding=serialization.E
         format=ser_format
     )
 
+def getPrivateBytesFromKey(private_key: rsa.RSAPrivateKeyWithSerialization, encoding=serialization.Encoding.PEM, ser_format=serialization.PrivateFormat.TraditionalOpenSSL) -> bytes:
+    return private_key.private_bytes(
+        encoding=encoding,
+        format=ser_format,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+
 def getPrivateKeyFromBytes(private_bytes: bytes) -> rsa.RSAPrivateKey:
     return serialization.load_pem_private_key(
         data=private_bytes,
@@ -86,3 +93,11 @@ Key exchange algorithms come into play in shared_key message signature algorithm
 Because of this is advisable to rotate the keys time to time.
 Since there is nothing about supporting multiple assymetric algorithms we will use RSA by default.
 '''
+
+if __name__ == "__main__":
+    name = input("name: ")
+    private_bytes, public_bytes = generateAssymetricKey()
+
+    with open(f"{name}_private_key.pem", "wb") as pi_file, open(f"{name}_public_key.pem","wb") as pu_file:
+        pi_file.write(private_bytes)
+        pu_file.write(public_bytes)

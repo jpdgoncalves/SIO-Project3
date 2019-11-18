@@ -6,17 +6,21 @@ import coloredlogs, logging
 import re
 import os
 from aio_tcpserver import tcp_server
-from symmetric_encryption import buildSymmetricCypher
-from assymmetric_encryption import *
-from handshake_ec import *
+import symmetric_encryption
+import assymetric_encryption
+import handshake_ec
+import assymetric_encryption
 from hmac_generator import buildHMAC
 
 logger = logging.getLogger('root')
 
 STATE_CONNECT = 0
-STATE_OPEN = 1
-STATE_DATA = 2
-STATE_CLOSE= 3
+STATE_NEGOTIATE = 1
+STATE_READY = 2
+STATE_OPEN = 3
+STATE_DATA = 4
+STATE_ROTATE = 5
+STATE_CLOSE= 6
 
 #GLOBAL
 storage_dir = 'files'
@@ -45,6 +49,8 @@ class ClientHandler(asyncio.Protocol):
 		self.peername = transport.get_extra_info('peername')
 		logger.info('\n\nConnection from {}'.format(self.peername))
 		self.transport = transport
+		self.rsa_server_private_key = assymetric_encryption.getPrivateKeyFromBytes( open("server_private_key.pem","rb").read())
+		self.rsa_client_public_key = assymetric_encryption.getPublicKeyFromBytes( open("client_public_key.pem", "rb").read() )
 		self.state = STATE_CONNECT
 
 
@@ -95,12 +101,12 @@ class ClientHandler(asyncio.Protocol):
 
 		mtype = message.get('type', "").upper()
 
-		if mtype == 'OPEN':
-			ret = self.process_open(message)
-		elif mtype == 'DATA':
-			ret = self.process_data(message)
-		elif mtype == 'CLOSE':
-			ret = self.process_close(message)
+		if mtype == 'NEGOTIATE':
+			ret = self.process_negotiate(message)
+		elif mtype == 'EXCHANGE':
+			ret = self.exchange_key(message)
+		elif mtype == 'SECURE':
+			ret = self.process_secure(message)
 		else:
 			logger.warning("Invalid message type: {}".format(message['type']))
 			ret = False
@@ -118,9 +124,102 @@ class ClientHandler(asyncio.Protocol):
 
 			self.state = STATE_CLOSE
 			self.transport.close()
+	
+	def process_negotiate(self, message: dict) -> bool:
+		logger.debug(f"Process Open: {message}")
 
+		if self.state != STATE_CONNECT:
+			logger.warning("Invalid state. Discarding")
+			return False
+		
+		if not 'proposal' in message:
+			logger.warning("No proposal string")
+			return False
+		
+		proposal = message["proposal"]
+		parts = proposal.split("_")
+		self.key_exchange_algorithm = parts[0]
+		self.cipher_algortithm = parts[1]
 
-	def process_open(self, message: str) -> bool:
+		if self.key_exchange_algorithm != "DH":
+			logger.warning("invalid key exchange algorithm. Aborting")
+			return False
+		
+		if not self.cipher_algortithm in symmetric_encryption.SUPPORTED_ALGORITHMS:
+			logger.warning(f"{self.cipher_algortithm} not supported. Aborting")
+			return False
+		
+		if issubclass(symmetric_encryption.SUPPORTED_ALGORITHMS[self.cipher_algortithm], symmetric_encryption.algorithms.BlockCipherAlgorithm):
+			self.cipher_mode = parts[2]
+			self.digest_algorithm = parts[3].lower()
+
+			if not self.cipher_mode in symmetric_encryption.SUPPORTED_MODES:
+				logger.warning(f"{self.cipher_mode} not supported. Aborting")
+				return False
+
+		else:
+			self.digest_algorithm = parts[2].lower()
+		
+		if not self.digest_algorithm in assymetric_encryption.SUPPORTED_HASHES:
+			logger.warning(f"{self.digest_algorithm} not supported. Aborting")
+			return False
+		
+		self.state = STATE_NEGOTIATE
+		self._send({ 'type' : 'OK' })
+		return True
+	
+	def exchange_key(self, message: dict) -> bool:
+		logger.info("Exchanging key with client")
+
+		if self.state != STATE_NEGOTIATE:
+			logger.warning("Invalid state. Aborting")
+			return False
+
+		if not "peer_key" in message:
+			logger.warning("No peer key in message. Aborting")
+			return False
+		
+		dh_private_key, dh_public_key = handshake_ec.generateKeyPair()
+		dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
+		dh_peer_public_bytes = base64.b64decode( message["peer_key"] )
+		dh_peer_public_key = handshake_ec.buildPeerPublicKey(dh_peer_public_bytes)
+
+		message = {
+			'type' : 'EXCHANGE',
+			'peer_key' : base64.b64encode(dh_public_bytes).decode()
+		}
+
+		self.shared_key = handshake_ec.deriveSharedKey(dh_private_key, dh_peer_public_key)
+		self.state = STATE_READY
+		self._send(message)
+		return True
+	
+	def process_secure(self, message: dict) -> bool:
+
+		unsecure_message = self.unsecure(message)
+		mtype = unsecure_message["type"]
+
+		if mtype == 'ROTATE':
+			ret = self.process_rotate()
+		elif mtype == 'OPEN':
+			ret = self.process_open(unsecure_message)
+		elif mtype == 'DATA':
+			ret = self.process_data(unsecure_message)
+		elif mtype == 'CLOSE':
+			ret = self.process_close(unsecure_message)
+		else:
+			logger.warning("Invalid message type in payload. Aborting")
+			ret = False
+		
+		return ret
+	
+	def process_rotate(self):
+		message = {"type" : "OK"}
+		secure_message = self.secure(message)
+		self._send(secure_message)
+		return True
+
+	def process_open(self, message: dict) -> bool:
 		"""
 		Processes an OPEN message from the client
 		This message should contain the filename
@@ -130,7 +229,7 @@ class ClientHandler(asyncio.Protocol):
 		"""
 		logger.debug("Process Open: {}".format(message))
 
-		if self.state != STATE_CONNECT:
+		if self.state != STATE_READY:
 			logger.warning("Invalid state. Discarding")
 			return False
 
@@ -154,12 +253,14 @@ class ClientHandler(asyncio.Protocol):
 		except Exception:
 			logger.exception("Unable to open file")
 			return False
-
-		self._send({'type': 'OK'})
+		
+		message = {'type': 'OK'}
+		secure_message = self.secure(message)
 
 		self.file_name = file_name
 		self.file_path = file_path
 		self.state = STATE_OPEN
+		self._send(secure_message)
 		return True
 
 
@@ -202,6 +303,10 @@ class ClientHandler(asyncio.Protocol):
 		except:
 			logger.exception("Could not write to file")
 			return False
+		
+		message = {"type" : "OK"}
+		secure_message = self.secure(message)
+		self._send(secure_message)
 
 		return True
 
@@ -219,12 +324,25 @@ class ClientHandler(asyncio.Protocol):
 		self.transport.close()
 		if self.file is not None:
 			self.file.close()
+			self.shared_key = None
+			self.rsa_server_private_key = None
+			self.rsa_client_public_key = None
 			self.file = None
 
 		self.state = STATE_CLOSE
 
 		return True
 
+	def secure(self,message: dict) -> dict:
+		secure_message = {
+			'type' : 'SECURE',
+			'payload' : json.dumps(message)
+		}
+		return secure_message
+	
+	def unsecure(self, secure_message: dict) -> dict:
+		unsecure_message = json.loads( secure_message["payload"] )
+		return unsecure_message
 
 	def _send(self, message: str) -> None:
 		"""
