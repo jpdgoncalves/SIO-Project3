@@ -10,6 +10,7 @@ import symmetric_encryption
 import assymetric_encryption
 import handshake_ec
 import assymetric_encryption
+import secure
 from hmac_generator import buildHMAC
 
 logger = logging.getLogger('root')
@@ -38,6 +39,9 @@ class ClientHandler(asyncio.Protocol):
 		self.storage_dir = storage_dir
 		self.buffer = ''
 		self.peername = ''
+
+		self.rotate_at_size = 960 * 2000
+		self.read_data_size = 0
 
 	def connection_made(self, transport) -> None:	#Override from asyncio.BaseProtocol
 		"""
@@ -158,6 +162,7 @@ class ClientHandler(asyncio.Protocol):
 				return False
 
 		else:
+			self.cipher_mode = ""
 			self.digest_algorithm = parts[2].lower()
 		
 		if not self.digest_algorithm in assymetric_encryption.SUPPORTED_HASHES:
@@ -196,11 +201,11 @@ class ClientHandler(asyncio.Protocol):
 	
 	def process_secure(self, message: dict) -> bool:
 
-		unsecure_message = self.unsecure(message)
+		unsecure_message = secure.unsecure(message, self.shared_key, self.rsa_server_private_key, self.cipher_algortithm, self.cipher_mode, self.digest_algorithm)
 		mtype = unsecure_message["type"]
 
 		if mtype == 'ROTATE':
-			ret = self.process_rotate()
+			ret = self.process_rotate(unsecure_message)
 		elif mtype == 'OPEN':
 			ret = self.process_open(unsecure_message)
 		elif mtype == 'DATA':
@@ -213,9 +218,23 @@ class ClientHandler(asyncio.Protocol):
 		
 		return ret
 	
-	def process_rotate(self):
-		message = {"type" : "OK"}
-		secure_message = self.secure(message)
+	def process_rotate(self, message: dict) -> bool:
+
+		dh_private_key, dh_public_key = handshake_ec.generateKeyPair()
+		dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
+		peer_public_bytes = base64.b64decode( message["peer_key"].encode() )
+		peer_public_key = handshake_ec.buildPeerPublicKey(peer_public_bytes)
+
+		r_message = {
+			"type" : "ROTATE",
+			"peer_key" : base64.b64encode( dh_public_bytes ).decode()
+		}
+
+		self.state = STATE_DATA
+		old_shared_key = self.shared_key
+		self.shared_key = handshake_ec.deriveSharedKey(dh_private_key, peer_public_key)
+
+		secure_message = secure.secure(r_message, old_shared_key, self.rsa_client_public_key, self.cipher_algortithm, self.cipher_mode, self.digest_algorithm)
 		self._send(secure_message)
 		return True
 
@@ -255,7 +274,7 @@ class ClientHandler(asyncio.Protocol):
 			return False
 		
 		message = {'type': 'OK'}
-		secure_message = self.secure(message)
+		secure_message = secure.secure(message, self.shared_key, self.rsa_client_public_key, self.cipher_algortithm, self.cipher_mode, self.digest_algorithm)
 
 		self.file_name = file_name
 		self.file_path = file_path
@@ -293,6 +312,7 @@ class ClientHandler(asyncio.Protocol):
 				return False
 
 			bdata = base64.b64decode(message['data'])
+			self.read_data_size += len(bdata)
 		except:
 			logger.exception("Could not decode base64 content from message.data")
 			return False
@@ -304,8 +324,13 @@ class ClientHandler(asyncio.Protocol):
 			logger.exception("Could not write to file")
 			return False
 		
+		if self.read_data_size >= self.rotate_at_size:
+			logger.debug("Waiting for a rotation message")
+			self.state = STATE_ROTATE
+			self.read_data_size = 0
+		
 		message = {"type" : "OK"}
-		secure_message = self.secure(message)
+		secure_message = secure.secure(message, self.shared_key, self.rsa_client_public_key, self.cipher_algortithm, self.cipher_mode, self.digest_algorithm)
 		self._send(secure_message)
 
 		return True
@@ -332,17 +357,6 @@ class ClientHandler(asyncio.Protocol):
 		self.state = STATE_CLOSE
 
 		return True
-
-	def secure(self,message: dict) -> dict:
-		secure_message = {
-			'type' : 'SECURE',
-			'payload' : json.dumps(message)
-		}
-		return secure_message
-	
-	def unsecure(self, secure_message: dict) -> dict:
-		unsecure_message = json.loads( secure_message["payload"] )
-		return unsecure_message
 
 	def _send(self, message: str) -> None:
 		"""
