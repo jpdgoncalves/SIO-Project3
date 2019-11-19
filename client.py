@@ -19,6 +19,9 @@ STATE_DATA = 4
 STATE_ROTATE = 5
 STATE_CLOSE = 6
 
+CIPHER_ALGORITHM = "AES"
+CIPHER_MODE = "CBC"
+DIGEST_ALGORITHM = "sha256"
 
 class ClientProtocol(asyncio.Protocol):
     """
@@ -43,9 +46,9 @@ class ClientProtocol(asyncio.Protocol):
         self.read_data_size = 0
 
         self.key_exchange_algorithm = "DH"
-        self.cipher_algorithm = "AES"
-        self.cipher_mode = "CBC"
-        self.digest_algorithm = "sha256"
+        self.cipher_algorithm = CIPHER_ALGORITHM
+        self.cipher_mode = CIPHER_MODE
+        self.digest_algorithm = DIGEST_ALGORITHM
         self.own_private_key = None
         self.peer_public_key = None
         self.dh_private_key = None
