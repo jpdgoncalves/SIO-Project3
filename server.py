@@ -17,11 +17,12 @@ logger = logging.getLogger('root')
 
 STATE_CONNECT = 0
 STATE_NEGOTIATE = 1
-STATE_READY = 2
-STATE_OPEN = 3
-STATE_DATA = 4
-STATE_ROTATE = 5
-STATE_CLOSE= 6
+STATE_EXCHANGE = 2
+STATE_READY = 3
+STATE_OPEN = 4
+STATE_DATA = 5
+STATE_ROTATE = 6
+STATE_CLOSE= 7
 
 #GLOBAL
 storage_dir = 'files'
@@ -32,7 +33,7 @@ class ClientHandler(asyncio.Protocol):
 		Default constructor
 		"""
 		self.signal = signal
-		self.state = 0
+		self.state = STATE_CONNECT
 		self.file = None
 		self.file_name = None
 		self.file_path = None
@@ -40,8 +41,13 @@ class ClientHandler(asyncio.Protocol):
 		self.buffer = ''
 		self.peername = ''
 
-		self.rotate_at_size = 960 * 2000
-		self.read_data_size = 0
+		self.key_exchange_algorithm = ""
+		self.cipher_algorithm = ""
+		self.cipher_mode = ""
+		self.digest_algorithm = ""
+
+		self.read_bytes_to_rotate = self.read_size * 1092
+        self.total_read_bytes = 0
 
 	def connection_made(self, transport) -> None:	#Override from asyncio.BaseProtocol
 		"""
@@ -53,9 +59,7 @@ class ClientHandler(asyncio.Protocol):
 		self.peername = transport.get_extra_info('peername')
 		logger.info('\n\nConnection from {}'.format(self.peername))
 		self.transport = transport
-		self.rsa_server_private_key = assymetric_encryption.getPrivateKeyFromBytes( open("server_private_key.pem","rb").read())
-		self.rsa_client_public_key = assymetric_encryption.getPublicKeyFromBytes( open("client_public_key.pem", "rb").read() )
-		self.state = STATE_CONNECT
+		self.state = STATE_NEGOTIATE
 
 
 	def data_received(self, data: bytes) -> None:	#Override from asyncio.Protocol
@@ -104,18 +108,18 @@ class ClientHandler(asyncio.Protocol):
 			return
 
 		mtype = message.get('type', "").upper()
+		error = True
 
-		if mtype == 'NEGOTIATE':
-			ret = self.process_negotiate(message)
-		elif mtype == 'EXCHANGE':
-			ret = self.exchange_key(message)
-		elif mtype == 'SECURE':
-			ret = self.process_secure(message)
+		if mtype == "NEGOTIATE":
+			error = self.process_negotiate(message)
+		elif mtype == "EXCHANGE":
+			error = self.process_exchange(message)
+		elif mtype == "SECURE":
+			error = self.process_secure(message)
 		else:
-			logger.warning("Invalid message type: {}".format(message['type']))
-			ret = False
+			logger.warn("Invalid message type. Closing connection.")
 
-		if not ret:
+		if error:
 			try:
 				self._send({'type': 'ERROR', 'message': 'See server'})
 			except:
@@ -130,113 +134,68 @@ class ClientHandler(asyncio.Protocol):
 			self.transport.close()
 	
 	def process_negotiate(self, message: dict) -> bool:
-		logger.debug(f"Process Open: {message}")
-
-		if self.state != STATE_CONNECT:
-			logger.warning("Invalid state. Discarding")
-			return False
-		
-		if not 'proposal' in message:
-			logger.warning("No proposal string")
-			return False
-		
-		proposal = message["proposal"]
-		parts = proposal.split("_")
-		self.key_exchange_algorithm = parts[0]
-		self.cipher_algortithm = parts[1]
-
-		if self.key_exchange_algorithm != "DH":
-			logger.warning("invalid key exchange algorithm. Aborting")
-			return False
-		
-		if not self.cipher_algortithm in symmetric_encryption.SUPPORTED_ALGORITHMS:
-			logger.warning(f"{self.cipher_algortithm} not supported. Aborting")
-			return False
-		
-		if issubclass(symmetric_encryption.SUPPORTED_ALGORITHMS[self.cipher_algortithm], symmetric_encryption.algorithms.BlockCipherAlgorithm):
-			self.cipher_mode = parts[2]
-			self.digest_algorithm = parts[3].lower()
-
-			if not self.cipher_mode in symmetric_encryption.SUPPORTED_MODES:
-				logger.warning(f"{self.cipher_mode} not supported. Aborting")
-				return False
-
-		else:
-			self.cipher_mode = ""
-			self.digest_algorithm = parts[2].lower()
-		
-		if not self.digest_algorithm in assymetric_encryption.SUPPORTED_HASHES:
-			logger.warning(f"{self.digest_algorithm} not supported. Aborting")
-			return False
-		
-		self.state = STATE_NEGOTIATE
-		self._send({ 'type' : 'OK' })
-		return True
-	
-	def exchange_key(self, message: dict) -> bool:
-		logger.info("Exchanging key with client")
+		logger.debug(f"Process Negotiate: {message}")
 
 		if self.state != STATE_NEGOTIATE:
-			logger.warning("Invalid state. Aborting")
-			return False
-
-		if not "peer_key" in message:
-			logger.warning("No peer key in message. Aborting")
-			return False
+			logger.warn("Invalid state for negotiations. Closing connection")
+			return True
 		
-		dh_private_key, dh_public_key = handshake_ec.generateKeyPair()
-		dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
-		dh_peer_public_bytes = base64.b64decode( message["peer_key"] )
-		dh_peer_public_key = handshake_ec.buildPeerPublicKey(dh_peer_public_bytes)
+		if not "proposal" in message:
+			logger.warn("No proposal string. Closing connection.")
+			
+		self._get_parameters(message["proposal"])
+		error = self._verify_parameters()
 
-		message = {
-			'type' : 'EXCHANGE',
-			'peer_key' : base64.b64encode(dh_public_bytes).decode()
-		}
+		if not error:
 
-		self.shared_key = handshake_ec.deriveSharedKey(dh_private_key, dh_peer_public_key)
+			message = {
+				"type" : "OK"
+				}
+			
+			self.state = STATE_EXCHANGE
+			self._send(message)
+
+		return error
+	
+	def process_exchange(self, message: dict) -> bool:
+		logger.info("Exchanging key with client")
+
+		if self.state != STATE_EXCHANGE:
+			logger.warn("Invalid state for exchange message. Closing connection")
+			return True
+		
+		exchange_priv_key, exchange_public_key = handshake_ec.generateKeyPair()
+        exchange_public_bytes = handshake_ec.getPeerPublicBytesFromKey(exchange_public_key)
+		
+		exchange_peer_bytes = base64.b64decode(message["peer_key"].encode())
+        exchange_peer_key = handshake_ec.buildPeerPublicKey(exchange_peer_bytes)
+        exchange_shared_key = handshake_ec.deriveSharedKey(exchange_priv_key, exchange_peer_key)
+
+		self.exchange_share_key = exchange_shared_key
 		self.state = STATE_READY
-		self._send(message)
-		return True
+		self.send_exchange(exchange_public_bytes)
+		return False
 	
 	def process_secure(self, message: dict) -> bool:
+		logger.info(f"Process Secure.")
 
-		unsecure_message = secure.unsecure(message, self.shared_key, self.rsa_server_private_key, self.cipher_algortithm, self.cipher_mode, self.digest_algorithm)
-		mtype = unsecure_message["type"]
+		# Need to unsecure the message
 
-		if mtype == 'ROTATE':
-			ret = self.process_rotate(unsecure_message)
-		elif mtype == 'OPEN':
-			ret = self.process_open(unsecure_message)
-		elif mtype == 'DATA':
-			ret = self.process_data(unsecure_message)
-		elif mtype == 'CLOSE':
-			ret = self.process_close(unsecure_message)
+		error = True
+		mtype = message.get("type", None)
+
+		if mtype == "OPEN":
+			error = self.process_open(message)
+		elif mtype == "DATA":
+			error = self.process_data(message)
+		elif mtype == "ROTATE":
+			error = self.process_rotate(message)
+		elif mtype == "CLOSE":
+			error = self.process_close(message)
 		else:
-			logger.warning("Invalid message type in payload. Aborting")
-			ret = False
-		
-		return ret
-	
-	def process_rotate(self, message: dict) -> bool:
+			logger.warn("Invalid message type(non secure context). Closing connection")
 
-		dh_private_key, dh_public_key = handshake_ec.generateKeyPair()
-		dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
-		peer_public_bytes = base64.b64decode( message["peer_key"].encode() )
-		peer_public_key = handshake_ec.buildPeerPublicKey(peer_public_bytes)
-
-		r_message = {
-			"type" : "ROTATE",
-			"peer_key" : base64.b64encode( dh_public_bytes ).decode()
-		}
-
-		self.state = STATE_DATA
-		old_shared_key = self.shared_key
-		self.shared_key = handshake_ec.deriveSharedKey(dh_private_key, peer_public_key)
-
-		secure_message = secure.secure(r_message, old_shared_key, self.rsa_client_public_key, self.cipher_algortithm, self.cipher_mode, self.digest_algorithm)
-		self._send(secure_message)
-		return True
+		return error
 
 	def process_open(self, message: dict) -> bool:
 		"""
@@ -250,11 +209,11 @@ class ClientHandler(asyncio.Protocol):
 
 		if self.state != STATE_READY:
 			logger.warning("Invalid state. Discarding")
-			return False
+			return True
 
 		if not 'file_name' in message:
 			logger.warning("No filename in Open")
-			return False
+			return True
 
 		# Only chars and letters in the filename
 		file_name = re.sub(r'[^\w\.]', '', message['file_name'])
@@ -264,23 +223,21 @@ class ClientHandler(asyncio.Protocol):
 				os.mkdir("files")
 			except:
 				logger.exception("Unable to create storage directory")
-				return False
+				return True
 
 		try:
 			self.file = open(file_path, "wb")
 			logger.info("File open")
 		except Exception:
 			logger.exception("Unable to open file")
-			return False
+			return True
 		
-		message = {'type': 'OK'}
-		secure_message = secure.secure(message, self.shared_key, self.rsa_client_public_key, self.cipher_algortithm, self.cipher_mode, self.digest_algorithm)
 
 		self.file_name = file_name
 		self.file_path = file_path
 		self.state = STATE_OPEN
-		self._send(secure_message)
-		return True
+		self.send_ok()
+		return False
 
 
 	def process_data(self, message: str) -> bool:
@@ -303,37 +260,51 @@ class ClientHandler(asyncio.Protocol):
 
 		else:
 			logger.warning("Invalid state. Discarding")
-			return False
+			return True
 
 		try:
 			data = message.get('data', None)
 			if data is None:
 				logger.debug("Invalid message. No data found")
-				return False
+				return True
 
-			bdata = base64.b64decode(message['data'])
-			self.read_data_size += len(bdata)
+			bdata = base64.b64decode(message['data'].encode())
+			read_bytes = len(bdata)
 		except:
 			logger.exception("Could not decode base64 content from message.data")
-			return False
+			return True
 
 		try:
 			self.file.write(bdata)
 			self.file.flush()
 		except:
 			logger.exception("Could not write to file")
-			return False
+			return True
 		
-		if self.read_data_size >= self.rotate_at_size:
-			logger.debug("Waiting for a rotation message")
-			self.state = STATE_ROTATE
-			self.read_data_size = 0
-		
-		message = {"type" : "OK"}
-		secure_message = secure.secure(message, self.shared_key, self.rsa_client_public_key, self.cipher_algortithm, self.cipher_mode, self.digest_algorithm)
-		self._send(secure_message)
+		self.total_read_bytes += read_bytes
 
-		return True
+		if self.total_read_bytes >= self.read_bytes_to_rotate:
+			self.state = STATE_ROTATE
+			self.total_read_bytes = 0
+		
+		self.send_ok()
+		return False
+	
+
+	def process_rotate(self, message: dict) -> bool:
+		logger.info("Process Rotate.")
+
+		if self.state != STATE_ROTATE:
+			logger.warn("Invalid state for rotate. Closing connection")
+			return True
+		
+		if not "peer_key" in message:
+			logger.warn("No peer key found in message")
+			return True
+		
+
+
+		return False
 
 
 	def process_close(self, message: str) -> bool:
@@ -357,8 +328,59 @@ class ClientHandler(asyncio.Protocol):
 		self.state = STATE_CLOSE
 
 		return True
+	
 
-	def _send(self, message: str) -> None:
+	def send_exchange(self, exchange_public_bytes: bytes):
+
+		message = {
+			"type" : "EXCHANGE",
+			"peer_key" : base64.b64encode(exchange_public_bytes).decode()
+		}
+		self._send(message)
+	
+	def send_ok(self):
+		message = {
+			"type" : "OK"
+		}
+
+		self._send(message)
+	
+	def send_rotate(self):
+		pass
+	
+	def _get_parameters(self, proposal: str):
+		
+		parts = proposal.split("_")
+
+		self.key_exchange_algorithm = parts[0]
+		self.cipher_algorithm = parts[1]
+
+		if len(parts) == 4:
+			self.cipher_mode = parts[2]
+			self.digest_algorithm = parts[3]
+		else:
+			self.digest_algorithm = parts[2]
+	
+		
+	def _verify_parameters(self) -> bool:
+		
+		if not self.cipher_algorithm in symmetric_encryption.SUPPORTED_ALGORITHMS:
+			logger.warn("This algorithm is not supported. Closing connection.")
+			return True
+		
+		if issubclass(symmetric_encryption.SUPPORTED_ALGORITHMS[self.cipher_algorithm], symmetric_encryption.algorithms.BlockCipherAlgorithm):
+			if not self.cipher_mode in symmetric_encryption.SUPPORTED_MODES:
+				logger.warn("This mode is not supported. Closing connection.")
+				return True
+		
+		if not self.digest_algorithm in assymetric_encryption.SUPPORTED_HASHES:
+			logger.warn("This hash is not supported. Closing connection.")
+			return True
+
+		return False
+
+
+	def _send(self, message: dict) -> None:
 		"""
 		Effectively encodes and sends a message
 		:param message:

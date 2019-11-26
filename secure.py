@@ -35,10 +35,11 @@ import assymetric_encryption
 import handshake_ec
 import hmac_generator
 from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPrivateKey
 
 USED_IDS = set()
 
-def secure(message: dict, shared_key:bytes, peer_public_key, algorithm_name: str="AES", mode_name="CBC", hash_name:str="sha512") -> dict:
+def secure(message: dict, shared_key:bytes, peer_public_key: RSAPublicKey, algorithm_name: str="AES", mode_name="CBC", hash_name:str="sha512") -> dict:
 
     message_s = {
         'id' : int.from_bytes(os.urandom(16), byteorder="big"),
@@ -68,7 +69,7 @@ def secure(message: dict, shared_key:bytes, peer_public_key, algorithm_name: str
 
     return message_s
 
-def unsecure(secure_message: dict, shared_key:bytes, own_private_key, algorith_name: str="AES", mode_name="CBC", hash_name:str="sha512") -> dict:
+def unsecure(secure_message: dict, shared_key:bytes, own_private_key: RSAPrivateKey, algorith_name: str="AES", mode_name="CBC", hash_name:str="sha512") -> dict:
 
     verification = base64.b64decode(secure_message["verification"].encode())
     signed_message = {

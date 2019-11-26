@@ -14,6 +14,7 @@ logger = logging.getLogger('root')
 
 STATE_CONNECT = 0
 STATE_NEGOTIATE = 1
+STATE_EXCHANGE = 2
 STATE_OPEN = 3
 STATE_DATA = 4
 STATE_ROTATE = 5
@@ -21,7 +22,7 @@ STATE_CLOSE = 6
 
 CIPHER_ALGORITHM = "AES"
 CIPHER_MODE = "CBC"
-DIGEST_ALGORITHM = "sha256"
+DIGEST_ALGORITHM = "sha512"
 
 class ClientProtocol(asyncio.Protocol):
     """
@@ -37,26 +38,26 @@ class ClientProtocol(asyncio.Protocol):
 
         self.file_name = file_name
         self.file = None
-        self.file_end = False
         self.loop = loop
         self.state = STATE_CONNECT  # Initial State
         self.buffer = ''  # Buffer to receive data chunks
-
-        self.ROTATE_AT_SIZE = 960 * 2000
-        self.read_data_size = 0
 
         self.key_exchange_algorithm = "DH"
         self.cipher_algorithm = CIPHER_ALGORITHM
         self.cipher_mode = CIPHER_MODE
         self.digest_algorithm = DIGEST_ALGORITHM
-        self.own_private_key = None
-        self.peer_public_key = None
-        self.dh_private_key = None
-        self.share_key = None
 
-        with open("client_private_key.pem","rb") as c_file, open("server_public_key.pem","rb") as s_file:
-            self.own_private_key = assymetric_encryption.getPrivateKeyFromBytes(c_file.read())
-            self.peer_public_key = assymetric_encryption.getPublicKeyFromBytes(s_file.read())
+        self.complete = False
+        self.exchange_priv_key = None
+        self.exchange_shared_key = None
+        self.own_apriv_key = None
+        self.server_apublic_key = None 
+        self.oak_filename = "client_private_key.pem"
+        self.sak_filename = "server_public_key.pem"
+
+        self.read_size = 16 * 60
+        self.read_bytes_to_rotate = self.read_size * 1092
+        self.total_read_bytes = 0
 
     def connection_made(self, transport) -> None:	#Override from asyncio.BaseProtocol
         """
@@ -65,15 +66,15 @@ class ClientProtocol(asyncio.Protocol):
         :param transport: The transport stream to use for this client
         :return: No return
         """
+
+        with open(self.oak_filename,"rb") as oak_file, open(self.sak_filename,"rb") as sak_file:
+            self.own_apriv_key = assymetric_encryption.getPrivateKeyFromBytes(oak_file.read())
+            self.server_apublic_key = assymetric_encryption.getPublicKeyFromBytes(oak_file.read()) 
+
         self.transport = transport
-
+        self.state = STATE_CONNECT
         logger.debug('Connected to Server')
-        
-
-        message = {'type': 'NEGOTIATE', 'proposal': self._get_proposal()}
-
-        self.state = STATE_NEGOTIATE
-        self._send(message)
+        self.send_negotiation_string()
 
 
     def data_received(self, data: str) -> None:		#Override from asyncio.Protocol
@@ -112,7 +113,7 @@ class ClientProtocol(asyncio.Protocol):
         :return:
         """
 
-        #logger.debug("Frame: {}".format(frame))
+        logger.debug("Frame: {}".format(frame))
         try:
             message = json.loads(frame)
         except:
@@ -121,53 +122,30 @@ class ClientProtocol(asyncio.Protocol):
             return
 
         mtype = message.get('type', None)
+        error = True
 
-        if mtype == 'SECURE':
-            message = secure.unsecure(message, self.share_key, self.own_private_key, self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
-            mtype = message.get('type', None)
-
-        if mtype == 'OK':  # Server replied OK. We can advance the state
-            if self.state == STATE_NEGOTIATE:
-                logger.info("Negotiations sucessfull. Sending peer key.")
-                self.exchange_key()
-            elif self.state == STATE_ROTATE:
-                logger.info("Rotating keys")
-                self.rotate()
-            elif self.state == STATE_OPEN:
-                logger.info("Channel open")
-                self.send_file_portion()
-            elif self.state == STATE_DATA:  # Got an OK during a message transfer.
-                logger.info("Sending data")
-                self.send_file_portion()
-            elif self.state == STATE_CLOSE:
-                logger.info("Closing Server")
-                self.send_close()
-            else:
-                logger.warning("Ignoring message from server")
-            return
-        elif mtype == 'EXCHANGE':
-            if self.state == STATE_NEGOTIATE:
-                logger.info("Received peer key from server.")
-                self.derive_key(message)
-                self.send_secure_open()
-                return
-            else:
-                logger.warning("Invalid state for this type of message. Aborting")
-        elif mtype == 'ROTATE':
-            if self.state == STATE_ROTATE:
-                logger.info("Received rotating message from server")
-                self.derive_key(message)
-                self.send_file_portion()
-                return
-            else:
-                logger.warning("Invalid state for rotating messages. Aborting")
-        elif mtype == 'ERROR':
-            logger.warning("Got error from server: {}".format(message.get('data', None)))
+        if mtype == "OK":
+            error = self.process_ok(message)
+        elif mtype == "EXCHANGE":
+            error = self.process_exchange(message)
+        elif mtype == "SECURE":
+            error = self.process_secure(message)
+        elif mtype == "ERROR":
+            error = True
+            logger.warn(f"Got an error from the server: {message}")
         else:
-            logger.warning("Invalid message type")
+            logger.warn("Invalid message type.")
+            error = True
 
-        self.transport.close()
-        self.loop.stop()
+        if error:
+            logger.warn("Something went wrong. Closing connection")
+            self.transport.close()
+            self.loop.stop()
+        
+        if self.complete:
+            logger.info("File sent with sucess. Closing connection")
+            self.transport.close()
+            self.loop.stop()
 
     def connection_lost(self, exc):		#Override from asyncio.BaseProtocol
         """
@@ -178,59 +156,117 @@ class ClientProtocol(asyncio.Protocol):
         logger.info('The server closed the connection')
         self.loop.stop()
     
-    def exchange_key(self):
-        logger.info('Exchanging key with server')
+    def process_ok(self, message: dict) -> bool:
+        logger.info("Processing ok message (unsecure context).")
 
-        dh_private_key, dh_public_key = handshake_ec.generateKeyPair()
-        dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
+        if self.state != STATE_NEGOTIATE:
+            logger.warn("Invalid state for this message")
+            return True
+        
+        self.send_exchange()
+
+        return False
+
+    def process_exchange(self, message: dict) -> bool:
+        logger.info("Processing exchange message.")
+
+        if self.state != STATE_EXCHANGE:
+            logger.warn("Invalid state for this message.")
+            return True
+        
+        exchange_peer_bytes = base64.b64decode(message["peer_key"].encode())
+        exchange_peer_key = handshake_ec.buildPeerPublicKey(exchange_peer_bytes)
+        exchange_shared_key = handshake_ec.deriveSharedKey(self.exchange_priv_key, exchange_peer_key)
+
+        self.exchange_shared_key = exchange_shared_key
+        self.send_file_open()
+        return False
+    
+    def process_secure(self, message: dict) -> bool:
+        logger.info("Processing secure message.")
+
+        message = secure.unsecure(message, self.shared_key, self.own_apriv_key,
+                                  self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
+
+        error = False
+        mtype = message.get("type", None)
+
+        if mtype == "OK":
+            if self.state == STATE_OPEN:
+                error = self.send_file_data()
+            elif self.state == STATE_DATA:
+                error = self.send_file_data()
+            elif self.state == STATE_ROTATE:
+                error = self.send_rotate()
+            elif self.state == STATE_CLOSE:
+                error = self.send_close()
+        elif mtype == "ROTATE":
+            error = self.process_rotate(message)
+        elif mtype == "ERROR":
+            logger.warn("Something went wrong(secure context)")
+            error = True
+
+        return error
+    
+    def process_rotate(message: dict) -> bool:
+        logger.info("Processing rotate")
+
+        if self.state != STATE_ROTATE:
+            logger.warn("Invalid state for rotating keys. Closing connection.")
+            return True
+        
+        exchange_peer_bytes = base64.b64decode(message["peer_key"].encode())
+        exchange_peer_key = handshake_ec.buildPeerPublicKey(exchange_peer_bytes)
+        exchange_shared_key = handshake_ec.deriveSharedKey(self.exchange_priv_key, exchange_peer_key)
+
+        self.exchange_shared_key = exchange_shared_key
+        self.state = STATE_DATA
+
+        return self.send_file_data()
+    
+    def send_negotiation_string(self):
+        logger.info("Sending negotiation string.")
 
         message = {
-            'type' : 'EXCHANGE',
-            'peer_key' : base64.b64encode(dh_public_bytes).decode()
+            "type" : "NEGOTIATE",
+            "proposal" : self._get_proposal()
         }
 
-        self.dh_private_key = dh_private_key
+        self.state = STATE_NEGOTIATE
         self._send(message)
     
-    def rotate(self):
-        logger.info('Rotating keys')
-
-        dh_private_key, dh_public_key = handshake_ec.generateKeyPair()
-        dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
+    def send_exchange(self):
+        logger.info("Sending an Exchange message.")
 
         message = {
-            'type' : 'ROTATE',
-            'peer_key' : base64.b64encode(dh_public_bytes).decode()
+            "type" : "EXCHANGE",
+            "peer_key" : None
         }
 
-        self.dh_private_key = dh_private_key
-        secure_message = secure.secure(message, self.share_key, self.peer_public_key, self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
-        self._send(secure_message)
+        exchange_priv_key, exchange_public_key = handshake_ec.generateKeyPair()
+        exchange_public_bytes = handshake_ec.getPeerPublicBytesFromKey(exchange_public_key)
+        message["peer_key"] = base64.b64encode(exchange_public_bytes).decode()
+
+        self.exchange_priv_key = exchange_priv_key
+        self.state = STATE_EXCHANGE
+        self._send(message)
     
-    def derive_key(self,message: dict):
-        logger.info("Deriving key")
+    def send_file_open(self):
+        logger.info("Sending an Open message.")
 
-        if not "peer_key" in message:
-            logger.warning("No peer key found. Aborting")
-            self.transport.close()
-            self.loop.stop()
+        message = {
+            "type" : "OPEN",
+            "file_name" : self.file_name
+        }
 
-        dh_peer_public_bytes = base64.b64decode( message["peer_key"].encode() )
-        dh_peer_public_key = handshake_ec.buildPeerPublicKey(dh_peer_public_bytes)
-
-        self.share_key = handshake_ec.deriveSharedKey(self.dh_private_key, dh_peer_public_key)
-    
-    def send_secure_open(self):
-
-        message = {'type' : 'OPEN', 'file_name': self.file_name}
-
-        secure_message = secure.secure(message, self.share_key, self.peer_public_key, self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
+        message = secure.secure(message, self.exchange_shared_key, self.server_apublic_key,
+                                self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
 
         self.file = open(self.file_name, "rb")
         self.state = STATE_OPEN
-        self._send(secure_message)
+        self._send(message)
 
-    def send_file_portion(self) -> None:
+    def send_file_data(self) -> bool:
         """
         Sends a file to the server.
         The file is read in chunks, encoded to Base64 and sent as part of a DATA JSON message
@@ -252,29 +288,76 @@ class ClientProtocol(asyncio.Protocol):
             self._send({'type': 'CLOSE'})
             logger.info("File transferred. Closing transport")
             self.transport.close() """
-        
-        message = {'type' : 'DATA', 'data': None}
-        read_size = 16*60
-        data = self.file.read(read_size)
-        message['data'] = base64.b64encode(data).decode()
-        
-        self.read_data_size += len(data)
-
-        if len(data) != read_size:
-            self.state = STATE_CLOSE
-        elif self.read_data_size >= self.ROTATE_AT_SIZE:
-            self.state = STATE_ROTATE
-            self.read_data_size = 0
-        else:
+        if self.state == STATE_OPEN:
             self.state = STATE_DATA
         
-        secure_message = secure.secure(message, self.share_key, self.peer_public_key, self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
-        self._send(secure_message)
+        if self.state != STATE_DATA:
+            logger.warn("Invalid state for data messages. Closing connection.")
+            return True
+        
+        message = {
+            "type" : "DATA",
+            "data" : None
+        }
+        
+        data = self.file.read(self.read_size)
+        read_size = len(data)
+        message["data"] = base64.b64encode(data).decode()
+        
+        self.total_read_bytes += read_size
+
+        if self.total_read_bytes >= self.read_bytes_to_rotate:
+            self.state = STATE_ROTATE
+            self.total_read_bytes = 0
+        elif read_size < self.read_size:
+            self.state = STATE_CLOSE
+        
+        message = secure.secure(message, self.exchange_shared_key, self.server_apublic_key,
+                                self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
+        self._send(message)
+        return False
+
+    def send_rotate(self) -> bool:
+        logger.info("Sending a rotate message")
+
+        if self.state != STATE_ROTATE:
+            logger.warn("Invalid state to send rotate message. Closing connection")
+            return True
+        
+        message = {
+            "type" : "ROTATE",
+            "peer_key" : None
+        }
+
+        exchange_priv_key, exchange_public_key = handshake_ec.generateKeyPair()
+        exchange_public_bytes = handshake_ec.getPeerPublicBytesFromKey(exchange_public_key)
+        message["peer_key"] = base64.b64encode(exchange_public_bytes).decode()
+
+        message = secure.secure(message, self.exchange_shared_key, self.server_apublic_key,
+                                self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
+
+        self.exchange_priv_key = exchange_priv_key
+        self._send(message)
+        return False
     
     def send_close(self):
-        message = {'type' : 'CLOSE'}
-        secure_message = secure.secure(message, self.share_key, self.peer_public_key, self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
-        self._send(secure_message)
+        logger.info("Sending close.")
+
+        if self.state != STATE_CLOSE:
+            logger.warn("Invalid state for close message. ")
+            return True
+        
+        message = {
+            "type" : "CLOSE"
+        }
+
+        message = secure.secure(message, self.exchange_shared_key, self.server_apublic_key,
+                                self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
+
+        self.file.close()
+        self.complete = True
+        self._send(message)
+        return False
     
     def _get_proposal(self) -> str:
         proposal = self.key_exchange_algorithm + "_" + self.cipher_algorithm
@@ -282,7 +365,7 @@ class ClientProtocol(asyncio.Protocol):
         proposal += "_" + self.digest_algorithm
         return proposal
 
-    def _send(self, message: str) -> None:
+    def _send(self, message: dict) -> None:
         """
         Effectively encodes and sends a message
         :param message:
