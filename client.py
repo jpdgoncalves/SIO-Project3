@@ -55,8 +55,8 @@ class ClientProtocol(asyncio.Protocol):
         self.oak_filename = "client_private_key.pem"
         self.sak_filename = "server_public_key.pem"
 
-        self.read_size = 16 * 60
-        self.read_bytes_to_rotate = self.read_size * 1092
+        self.read_size = 1024
+        self.read_bytes_to_rotate = self.read_size * 1024 * 2
         self.total_read_bytes = 0
 
     def connection_made(self, transport) -> None:	#Override from asyncio.BaseProtocol
@@ -69,7 +69,7 @@ class ClientProtocol(asyncio.Protocol):
 
         with open(self.oak_filename,"rb") as oak_file, open(self.sak_filename,"rb") as sak_file:
             self.own_apriv_key = assymetric_encryption.getPrivateKeyFromBytes(oak_file.read())
-            self.server_apublic_key = assymetric_encryption.getPublicKeyFromBytes(oak_file.read()) 
+            self.server_apublic_key = assymetric_encryption.getPublicKeyFromBytes(sak_file.read()) 
 
         self.transport = transport
         self.state = STATE_CONNECT
@@ -143,7 +143,7 @@ class ClientProtocol(asyncio.Protocol):
             self.loop.stop()
         
         if self.complete:
-            logger.info("File sent with sucess. Closing connection")
+            logger.info("File sent with success. Closing connection")
             self.transport.close()
             self.loop.stop()
 
@@ -154,6 +154,7 @@ class ClientProtocol(asyncio.Protocol):
         :return:
         """
         logger.info('The server closed the connection')
+        self.transport.close()
         self.loop.stop()
     
     def process_ok(self, message: dict) -> bool:
@@ -185,10 +186,10 @@ class ClientProtocol(asyncio.Protocol):
     def process_secure(self, message: dict) -> bool:
         logger.info("Processing secure message.")
 
-        message = secure.unsecure(message, self.shared_key, self.own_apriv_key,
+        message = secure.unsecure(message, self.exchange_shared_key, self.own_apriv_key,
                                   self.cipher_algorithm, self.cipher_mode, self.digest_algorithm)
 
-        error = False
+        error = True
         mtype = message.get("type", None)
 
         if mtype == "OK":
@@ -204,11 +205,12 @@ class ClientProtocol(asyncio.Protocol):
             error = self.process_rotate(message)
         elif mtype == "ERROR":
             logger.warn("Something went wrong(secure context)")
-            error = True
+        else:
+            logger.warn("Invalid message type")
 
         return error
     
-    def process_rotate(message: dict) -> bool:
+    def process_rotate(self, message: dict) -> bool:
         logger.info("Processing rotate")
 
         if self.state != STATE_ROTATE:
@@ -392,7 +394,7 @@ def main():
 
     args = parser.parse_args()
     file_name = os.path.abspath(args.file_name)
-    level = logging.DEBUG if args.verbose == 0 else logging.INFO
+    level = logging.DEBUG #if args.verbose == 0 else logging.INFO
     port = args.port
     server = args.server
 

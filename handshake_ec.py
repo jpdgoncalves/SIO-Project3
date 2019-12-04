@@ -34,7 +34,7 @@ def buildPeerPublicKey(peer_public_bytes: bytes): #public_bytes(serialization.En
         backend=default_backend()
     )
 
-def deriveSharedKey(private_key: ec.EllipticCurvePrivateKey,peer_public_key: ec.EllipticCurvePublicKey, digest_algorithm_name = "sha512"):
+def deriveSharedKey(private_key: ec.EllipticCurvePrivateKey,peer_public_key: ec.EllipticCurvePublicKey, digest_algorithm_name = "sha512") -> bytes:
     if not digest_algorithm_name in SUPPORTED_HASHES:
         raise ValueError(f"{digest_algorithm_name} is not supported")
 
