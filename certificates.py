@@ -7,6 +7,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.x509.oid import ExtensionOID
+from cryptography.hazmat.primitives.hashes import SHA256
 
 TRUST_ANCHOR_DIRECTORY = "/etc/ssl/certs"
 LOCAL_CERT_DIRECTORY = "./local_certs"
@@ -14,62 +15,87 @@ LOCAL_CERT_DIRECTORY = "./local_certs"
 Certificates = {}
 Cert_Rev_List = []
 
-def load_pem_cert(filepath):
-    cert_file = open(filepath,"rb")
-    cert = x509.load_pem_x509_certificate(
-        cert_file.read(),
-        default_backend()
-    )
-    cert_file.close()
-    if not cert.subject in Certificates:
-        Certificates[cert.subject] = cert
+def fingerprint(cert):
+    return cert.fingerprint(SHA256())
+
+def download_file(url):
+    print(f" - Dowloading: {url}")
+    response = request.urlopen(url)
+    return response.read()
+
+def load_cert(filepath):
+    cert = None
+
+    with open(filepath, "rb")as cert_file:
+        cert_data = cert_file.read()
+
+        if b"-----BEGIN CERTIFICATE-----" in cert_data:
+            print(" - This is a PEM Certificate. Attempting to load.")
+            cert = x509.load_pem_x509_certificate(
+                cert_data,
+                default_backend()
+            )
+        else:
+            print(" - Likely a DER certificate. Attempting to load.")
+            cert = x509.load_der_x509_certificate(
+                cert_data,
+                default_backend()
+            )
+    print(" - Certificate loaded.")
     return cert
+
+def is_cert_date_valid(cert):
+    now = datetime.now()
+    return cert.not_valid_before < now and now < cert.not_valid_after
 
 def load_trust_anchors():
     dir_iter = os.scandir(TRUST_ANCHOR_DIRECTORY)
     for entry in dir_iter:
-        print("verifying ",entry.path)
+        print(f" - Verifying {entry.path}")
         if entry.is_file():
-            print(" - its a certificate file")
+            print(f" - {entry.path} is a file")
             try:
-                cert = load_pem_cert(entry.path)
-                print(" - its a PEM certificate")
-                if check_cert_validity(cert):
+                cert = load_cert(entry.path)
+                if is_cert_date_valid(cert):
                     Certificates[cert.subject] = cert
-                    print(" - it has a valid date")
+                    print(f" - {entry.path} has a valid date. Registering")
                 else:
-                    print(" - does not have a valid date")
+                    print(f" - {entry.path} does not have a valid date. Discarding")
             except:
-                print(" - {} is not a PEM cert".format(entry.path))
+                print(f" - {entry.path} is not a certicate.")
         else:
-            print(" - {} is not a certificate file".format(entry.path))
+            print(f" - {entry.path} is not a file")
+        print("---")
 
-def load_cert_rev_list():
+def load_local_certs(directory_path):
     dir_iter = os.scandir(LOCAL_CERT_DIRECTORY)
     for entry in dir_iter:
-        print("verifying ",entry.path)
+        print(f"- Verifying {entry.path}")
         if entry.is_file():
-            print(" - its a certificate file")
+            print(f" - {entry.path} is a file")
             try:
-                cert = load_pem_cert(entry.path)
-                print(" - its a PEM certificate")
-                if check_cert_validity(cert):
+                cert = load_cert(entry.path)
+                print(f" - {entry.path} is a certificate")
+                if is_cert_date_valid(cert):
                     Certificates[cert.subject] = cert
-                    print(" - it has a valid date")
+                    print(f" - {entry.path} has a valid date. Registering.")
                 else:
-                    print(" - does not have a valid date")
+                    print(f" - {entry.path} does not have a valid date. Discrading.")
             except:
-                print(" - {} is not a PEM cert".format(entry.path))
+                print(f" - {entry.path} is not a certificate.")
         else:
-            print(" - {} is not a certificate file".format(entry.path))
+            print(f" - {entry.path} is not a file.")
+        print("---")
 
-def download_file(url):
-    response = request.urlopen(url)
-    return response.read()
-
-def check_cert_validity(cert):
-    now = datetime.now()
-    return cert.not_valid_before < now and now < cert.not_valid_after
+def build_cert_trust_chain(cert):
+    trust_chain = [cert]
+    
+    if cert.subject == cert.issuer:
+        return trust_chain
+    elif cert.issuer in Certificates:
+        return trust_chain + build_cert_trust_chain(Certificates[cert.issuer])
+    else:
+        raise Exception("The certificate provided has not been loaded! Unable to build trust chain!")
 
 def is_cert_revoked(cert):
     if cert.subject == cert.issuer:
@@ -86,16 +112,6 @@ def is_cert_revoked(cert):
                 if cert.serial_number == r.serial_number:
                     return True
     return False
-
-def build_cert_trust_chain(cert):
-    trust_chain = [cert]
-    
-    if cert.subject == cert.issuer:
-        return trust_chain
-    elif cert.issuer in Certificates:
-        return trust_chain + build_cert_trust_chain(Certificates[cert.issuer])
-    else:
-        raise Exception("The certificate provided has not been loaded! Unable to build trust chain!")
 
 def check_trust_chain(trust_chain):
     if trust_chain == []:
@@ -128,20 +144,22 @@ def check_trust_chain(trust_chain):
     check_trust_chain(trust_chain[1:])
 
 
+
 if __name__ == "__main__":
 
     filepath = input("path to the certificate you wish to load: ")
-    cert = load_pem_cert(filepath)
-    is_valid = check_cert_validity(cert)
+    cert = load_cert(filepath)
+    is_valid = is_cert_date_valid(cert)
+    Certificates[cert.subject] = cert
+    load_trust_anchors()
     print("serial number:",cert.serial_number)
     print("version:",cert.version)
     print("datetime now:", datetime.now())
     print("not valid before:", cert.not_valid_before)
     print("not valid after:", cert.not_valid_after)
-    print("is valid:", is_valid)
+    print("is date valid:", is_valid)
     print("is in Certificates Dictionary:", cert.subject in Certificates)
-    load_trust_anchors()
-    load_cert_rev_list()
+    load_local_certs(LOCAL_CERT_DIRECTORY)
     print("building trust path for {}".format(filepath))
     trust_chain = build_cert_trust_chain(cert)
     for entry in trust_chain:
@@ -153,4 +171,3 @@ if __name__ == "__main__":
 
 else :
     load_trust_anchors()
-    load_cert_rev_list()

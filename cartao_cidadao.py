@@ -13,7 +13,7 @@ pkcs11.load(lib)
 def get_cc_slot():
     slots = pkcs11.getSlotList()
     for slot in slots:
-        if 'CARTAO DE CIDADAO' in pkcs11.getTokenInfo(slot).label:
+        if b'CARTAO DE CIDADAO' in pkcs11.getTokenInfo(slot).label:
             return slot
     return None
 
@@ -39,7 +39,7 @@ def load_cert_auth_cc():
 def verify_signature_cc(text,signature,cert = None):
     slot = get_cc_slot()
     session = pkcs11.openSession(slot)
-    cert = load_cert_auth_cc() if cert == None else cert
+    cert = load_cert_auth_cc()[0] if cert == None else cert
     public_key = cert.public_key()
     result = False
     try:
@@ -58,7 +58,9 @@ def verify_signature_cc(text,signature,cert = None):
 
 if __name__ == "__main__":
     text = input("Um texto para ser assinado: ")
-    print(text)
     signature = sign_with_cc(text)
+    print(f"Signature: {signature}")
     is_valid = verify_signature_cc(text,signature)
     print("is valid: ", is_valid)
+    _,certificate_bytes = load_cert_auth_cc()
+    print(f"Certificate: {certificate_bytes}")

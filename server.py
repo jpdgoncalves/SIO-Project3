@@ -212,7 +212,7 @@ class ClientHandler(asyncio.Protocol):
 
         return error
 
-    def process_open(self, message: dict) -> bool:
+    def process_open(self,message: dict) -> bool:
         """
         Processes an OPEN message from the client
         This message should contain the filename
