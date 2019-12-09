@@ -154,11 +154,17 @@ if __name__ == "__main__":
     load_trust_anchors()
     print("serial number:",cert.serial_number)
     print("version:",cert.version)
+    print("issuer: ", cert.issuer)
+    print("subject: ", cert.subject)
+    print("extensions: ")
+    for extension in cert.extensions:
+        print(" - ", extension)
     print("datetime now:", datetime.now())
     print("not valid before:", cert.not_valid_before)
     print("not valid after:", cert.not_valid_after)
     print("is date valid:", is_valid)
     print("is in Certificates Dictionary:", cert.subject in Certificates)
+    quit()
     load_local_certs(LOCAL_CERT_DIRECTORY)
     print("building trust path for {}".format(filepath))
     trust_chain = build_cert_trust_chain(cert)
@@ -171,3 +177,4 @@ if __name__ == "__main__":
 
 else :
     load_trust_anchors()
+    load_local_certs(LOCAL_CERT_DIRECTORY)
