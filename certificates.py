@@ -99,15 +99,13 @@ def build_cert_trust_chain(cert):
 
 def is_cert_revoked(cert):
     if cert.subject == cert.issuer:
-        return False
+        return not cert.subject in Certificates
     extension_crl = cert.extensions.get_extension_for_oid(ExtensionOID.CRL_DISTRIBUTION_POINTS).value
     for crl_obj in extension_crl:
         for uri in crl_obj.full_name:
             url = uri.value
-            print(url)
             pem_crl_data = download_file(url)
             crl = x509.load_der_x509_crl(pem_crl_data,default_backend())
-            print(crl)
             for r in crl:
                 if cert.serial_number == r.serial_number:
                     return True
@@ -152,6 +150,7 @@ if __name__ == "__main__":
     is_valid = is_cert_date_valid(cert)
     Certificates[cert.subject] = cert
     load_trust_anchors()
+    load_local_certs(LOCAL_CERT_DIRECTORY)
     print("serial number:",cert.serial_number)
     print("version:",cert.version)
     print("issuer: ", cert.issuer)
@@ -164,14 +163,13 @@ if __name__ == "__main__":
     print("not valid after:", cert.not_valid_after)
     print("is date valid:", is_valid)
     print("is in Certificates Dictionary:", cert.subject in Certificates)
-    quit()
-    load_local_certs(LOCAL_CERT_DIRECTORY)
     print("building trust path for {}".format(filepath))
     trust_chain = build_cert_trust_chain(cert)
+    print("trust chain: ", trust_chain)
     for entry in trust_chain:
         print("====")
+        print(f" - Verifying {entry.subject}")
         print(is_cert_revoked(entry))
-    
     check_trust_chain(trust_chain)
     print("this certificate is trust worthy")
 
