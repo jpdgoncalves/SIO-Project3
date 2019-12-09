@@ -3,3 +3,4 @@ files/
 .vscode/
 __pycache__/
 cc.cer
+log.txt
