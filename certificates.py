@@ -108,7 +108,7 @@ def is_cert_revoked(cert):
             pem_crl_data = download_file(url)
             crl = x509.load_der_x509_crl(pem_crl_data,default_backend())
             for r in crl:
-                print(f" - Serial number in crl: {r.serial_number}")
+                #print(f" - Serial number in crl: {r.serial_number}")
                 if cert.serial_number == r.serial_number:
                     return True
     return False
@@ -157,9 +157,6 @@ if __name__ == "__main__":
     print("version:",cert.version)
     print("issuer: ", cert.issuer)
     print("subject: ", cert.subject)
-    #print("extensions: ")
-    #for extension in cert.extensions:
-    #    print(" - ", extension)
     print("datetime now:", datetime.now())
     print("not valid before:", cert.not_valid_before)
     print("not valid after:", cert.not_valid_after)
@@ -172,7 +169,6 @@ if __name__ == "__main__":
         print("====")
         print(f" - Verifying {entry.subject}")
         print(is_cert_revoked(entry))
-    quit()
     check_trust_chain(trust_chain)
     print("this certificate is trust worthy")
 
