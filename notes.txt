@@ -1,0 +1,2 @@
+The authentication Methods are either OTP via the S/KEY protocol or RSA Signature.
+Either way the server always authenticates themselves by a challenge from the client with their private key.

@@ -1,11 +1,14 @@
 import os
+import sys
 from urllib import request
 
-from datetime import datetime
+from datetime import datetime,timedelta
 from cryptography import x509
+from cryptography.x509 import NameOID,NameAttribute,Name,SubjectAlternativeName,DNSName,CertificateBuilder
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.hazmat.primitives.serialization import load_pem_public_key,Encoding,PrivateFormat,NoEncryption
 from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtensionOID
 from cryptography.hazmat.primitives.hashes import SHA256
 
@@ -23,6 +26,10 @@ def download_file(url):
     if DEBUG: print(f" - Dowloading: {url}")
     response = request.urlopen(url)
     return response.read()
+
+def is_cert_date_valid(cert):
+    now = datetime.now()
+    return cert.not_valid_before < now and now < cert.not_valid_after
 
 def load_cert(filepath):
     cert = None
@@ -45,9 +52,8 @@ def load_cert(filepath):
     if DEBUG: print(" - Certificate loaded.")
     return cert
 
-def is_cert_date_valid(cert):
-    now = datetime.now()
-    return cert.not_valid_before < now and now < cert.not_valid_after
+def save_cert(cert, filepath: str):
+    pass
 
 def load_trust_anchors():
     dir_iter = os.scandir(TRUST_ANCHOR_DIRECTORY)
@@ -109,6 +115,8 @@ def build_cert_trust_chain(cert):
         raise Exception("The certificate provided has not been loaded! Unable to build trust chain!")
 
 def is_cert_revoked(cert):
+    if not is_cert_date_valid(cert):
+        return False
     if cert.subject == cert.issuer:
         return not cert.subject in Certificates
     extension_crl = cert.extensions.get_extension_for_oid(ExtensionOID.CRL_DISTRIBUTION_POINTS).value
@@ -154,9 +162,63 @@ def check_trust_chain(trust_chain):
     )
     check_trust_chain(trust_chain[1:])
 
+############################################################################################
+#
+# MAIN CODE
+#
+############################################################################################
+
+def get_args():
+    return sys.argv[1:]
+
+def make_self_signed_certificate():
+    
+    cert_file_name = input("Name of the certificate file: ")
+    issuer_name = input("Name of the issuer: ")
+
+    rsa_priv_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+        backend=default_backend()
+    )
+    rsa_pub_key = rsa_priv_key.public_key()
+    subject = issuer = Name([
+        NameAttribute(NameOID.COUNTRY_NAME, u"PT"),
+        NameAttribute(NameOID.GIVEN_NAME, issuer_name)
+    ])
+    cert = CertificateBuilder().subject_name(
+        subject
+    ).issuer_name(
+        issuer
+    ).public_key(
+        rsa_pub_key
+    ).serial_number(
+        x509.random_serial_number()
+    ).not_valid_before(
+        datetime.utcnow()
+    ).not_valid_after(
+        datetime.utcnow() + timedelta(days=30)
+    ).add_extension(
+        SubjectAlternativeName([DNSName(u"localhost")]),
+        critical=False
+    ).sign(rsa_priv_key, SHA256(), default_backend())
+
+    with open(f"{cert_file_name}.cert.pem","wb") as cert_file, open(f"{cert_file_name}.key.pem","wb") as priv_key_file:
+        rsa_priv_bytes = rsa_priv_key.private_bytes(
+            encoding=Encoding.PEM,
+            format=PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=NoEncryption()
+        )
+        cert_pub_bytes = cert.public_bytes(Encoding.PEM)
+
+        priv_key_file.write(rsa_priv_bytes)
+        cert_file.write(cert_pub_bytes)
 
 
-if __name__ == "__main__":
+
+
+def test():
+    global DEBUG
     DEBUG = True
     filepath = input("path to the certificate you wish to load: ")
     cert = load_cert(filepath)
@@ -182,6 +244,15 @@ if __name__ == "__main__":
         print(is_cert_revoked(entry))
     check_trust_chain(trust_chain)
     print("this certificate is trust worthy")
+
+if __name__ == "__main__":
+    args = get_args()
+    if len(args) != 1 or not args[0] in ("create","test"):
+        print("Usage: certificates.py <create | test>")
+    elif args[0] == "create":
+        make_self_signed_certificate()
+    else:
+        test()
 
 else :
     load_trust_anchors()
