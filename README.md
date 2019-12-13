@@ -6,9 +6,9 @@ After cloning the repository and creating a virtual environment with all the req
 - Open 2 consoles
 - In one of them run:
 > source venv/bin/activate
--
-> python3 server.py
+
+> python3 src/server.py
 - In the other one run:
 > source venv/bin/activate
--
-> python3 client.py <name_of_file>
+
+> python3 src/client.py <name_of_file>
