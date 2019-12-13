@@ -10,7 +10,8 @@ from cryptography.x509.oid import ExtensionOID
 from cryptography.hazmat.primitives.hashes import SHA256
 
 TRUST_ANCHOR_DIRECTORY = "/etc/ssl/certs"
-LOCAL_CERT_DIRECTORY = "./local_certs"
+LOCAL_CERT_DIRECTORY = "local_certs"
+DEBUG = False
 
 Certificates = {}
 Cert_Rev_List = []
@@ -19,7 +20,7 @@ def fingerprint(cert):
     return cert.fingerprint(SHA256())
 
 def download_file(url):
-    print(f" - Dowloading: {url}")
+    if DEBUG: print(f" - Dowloading: {url}")
     response = request.urlopen(url)
     return response.read()
 
@@ -30,18 +31,18 @@ def load_cert(filepath):
         cert_data = cert_file.read()
 
         if b"-----BEGIN CERTIFICATE-----" in cert_data:
-            #print(" - This is a PEM Certificate. Attempting to load.")
+            if DEBUG: print(" - This is a PEM Certificate. Attempting to load.")
             cert = x509.load_pem_x509_certificate(
                 cert_data,
                 default_backend()
             )
         else:
-            #print(" - Likely a DER certificate. Attempting to load.")
+            if DEBUG: print(" - Likely a DER certificate. Attempting to load.")
             cert = x509.load_der_x509_certificate(
                 cert_data,
                 default_backend()
             )
-    #print(" - Certificate loaded.")
+    if DEBUG: print(" - Certificate loaded.")
     return cert
 
 def is_cert_date_valid(cert):
@@ -51,41 +52,51 @@ def is_cert_date_valid(cert):
 def load_trust_anchors():
     dir_iter = os.scandir(TRUST_ANCHOR_DIRECTORY)
     for entry in dir_iter:
-        #print(f" - Verifying {entry.path}")
+
+        if DEBUG: print(f" - Verifying {entry.path}")
+
         if entry.is_file():
-            #print(f" - {entry.path} is a file")
+
+            if DEBUG: print(f" - {entry.path} is a file")
+
             try:
                 cert = load_cert(entry.path)
                 if is_cert_date_valid(cert):
                     Certificates[cert.subject] = cert
-                    #print(f" - {entry.path} has a valid date. Registering")
+                    if DEBUG: print(f" - {entry.path} has a valid date. Registering")
                 else:
                     print(f" - {entry.path} does not have a valid date. Discarding")
             except:
                 print(f" - {entry.path} is not a certicate.")
         else:
             print(f" - {entry.path} is not a file")
-        #print("---")
+        if DEBUG: print("---")
 
 def load_local_certs(directory_path):
     dir_iter = os.scandir(LOCAL_CERT_DIRECTORY)
     for entry in dir_iter:
-        #print(f"- Verifying {entry.path}")
+
+        if DEBUG: print(f"- Verifying {entry.path}")
+
         if entry.is_file():
-            #print(f" - {entry.path} is a file")
+
+            if DEBUG: print(f" - {entry.path} is a file")
+
             try:
                 cert = load_cert(entry.path)
-                #print(f" - {entry.path} is a certificate")
+
+                if DEBUG: print(f" - {entry.path} is a certificate")
+
                 if is_cert_date_valid(cert):
                     Certificates[cert.subject] = cert
-                    #print(f" - {entry.path} has a valid date. Registering.")
+                    if DEBUG: print(f" - {entry.path} has a valid date. Registering.")
                 else:
                     print(f" - {entry.path} does not have a valid date. Discrading.")
             except:
                 print(f" - {entry.path} is not a certificate.")
         else:
             print(f" - {entry.path} is not a file.")
-        #print("---")
+        if DEBUG: print("---")
 
 def build_cert_trust_chain(cert):
     trust_chain = [cert]
@@ -146,7 +157,7 @@ def check_trust_chain(trust_chain):
 
 
 if __name__ == "__main__":
-
+    DEBUG = True
     filepath = input("path to the certificate you wish to load: ")
     cert = load_cert(filepath)
     is_valid = is_cert_date_valid(cert)
