@@ -1,2 +1,84 @@
-The authentication Methods are either OTP via the S/KEY protocol or RSA Signature.
-Either way the server always authenticates themselves by a challenge from the client with their private key.
+The authentication Methods are either OTP via the S/KEY protocol with Rsa Signature from the server or Mutual RSA Signature.
+Either way the server always authenticates themselves with a challenge from the client with their private key.
+
+CLIENT =====(AUTHENTICATION)=====> SERVER
+
+CLIENT <====(CHALLENGE)=========== SERVER
+
+CLIENT =====(CHALLENGE_RESPONSE)=> SERVER
+
+CLIENT <====(SUCESS/FAILURE)====== SERVER
+
+CLIENT =====(OPEN)===============> SERVER
+                 
+                 ...
+/=========================================================/
+/                    OLD PROTOCOL                         /
+/=========================================================/
+
+# MESSAGE NEGOTIATE
+# {
+#    type : NEGOTIATE
+#    proposal : DH_AES_GCM_SHA512
+# }
+
+# MESSAGE EXCHANGE
+# {
+#    type : EXCHANGE
+#    peer_key : b64encode(dh_public_bytes).decode() 
+# }
+
+# MESSAGE SECURE
+# {
+#    type : SECURE
+#    payload : b64encode(json.dumps(message)).decode()
+#    cyphered_key : b64encode(generated_key_bytes).decode()
+#    iv : b64encode(bytes).decode() [It is optional]
+#    nonce : b64encode(bytes).decode() [It is optional]
+#    tag : b64encode(bytes).decode() [It is optional]
+#    verification : b64encode(signature_bytes).decode()
+# }
+
+# MESSAGE ROTATE
+# {
+#    type : ROTATE
+#    peer_key : b64encode(dh_public_bytes).decode()
+# }
+
+/=========================================================/
+/                    NEW PROTOCOL                         /
+/=========================================================/
+
+# MESSAGE AUTHENTICATION
+# {
+#    type : AUTHENTICATION,
+#    proposal : DH_OTP_AES_GCM_SHA512
+# }
+
+# MESSAGE CHALLENGE (OTP)
+# {
+#    type : CHALLENGE,
+#    auth_id : 789784579684678,
+#    challenge : {
+#        root : base64encode(salt_bytes).decode(),
+#        indice : 30            
+#    }
+# }
+
+# MESSAGE CHALLENGE (RSA)
+# {
+#    type : CHALLENGE,
+#    auth_id : 5467458967458967,
+#    challenge : {
+#        nonce : base64encode(random_bytes)
+#    }  
+# }
+
+# MESSAGE CHALLENGE_RESPONSE (OTP)
+# {
+#     type : CHALLENGE_RESPONSE
+#     auth_id : 58647598674586947,
+#     
+# }
+
+# MESSAGE CHALLENGE_RESPONSE (RSA)

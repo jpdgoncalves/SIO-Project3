@@ -218,14 +218,18 @@ def make_self_signed_certificate():
 
 
 def test():
+    
     global DEBUG
     DEBUG = True
+
     filepath = input("path to the certificate you wish to load: ")
+
     cert = load_cert(filepath)
     is_valid = is_cert_date_valid(cert)
     Certificates[cert.subject] = cert
     load_trust_anchors()
     load_local_certs(LOCAL_CERT_DIRECTORY)
+
     print("serial number:",cert.serial_number)
     print("version:",cert.version)
     print("issuer: ", cert.issuer)
@@ -236,6 +240,7 @@ def test():
     print("is date valid:", is_valid)
     print("is in Certificates Dictionary:", cert.subject in Certificates)
     print("building trust path for {}".format(filepath))
+
     trust_chain = build_cert_trust_chain(cert)
     print("trust chain: ", trust_chain)
     for entry in trust_chain:
