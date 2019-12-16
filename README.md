@@ -3,6 +3,8 @@ Segundo Projeto de SIO
 
 ## How to run the code
 After cloning the repository and creating a virtual environment with all the requirements:
+- register a user with the following command. Make sure to have the citizenship card connected to your pc. Then follow the instructions that will be prompted. A <username>.user file should be produced.
+> python3 src/authentication.py register
 - Open 2 consoles
 - In one of them run:
 > source venv/bin/activate
