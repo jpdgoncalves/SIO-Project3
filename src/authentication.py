@@ -6,11 +6,13 @@ import json
 from cryptography.x509 import Certificate
 from cryptography.x509 import load_der_x509_certificate
 from cryptography.hazmat.primitives.serialization import Encoding
+from cryptography.hazmat.primitives.asymmetric import ec,rsa
 from cryptography.hazmat.backends import default_backend
 
 import cartao_cidadao
 import assymetric_encryption
 import certificates
+import handshake_ec
 
 USED_AUTH_IDS = set()
 USER_DIRECTORY = "users/"
@@ -25,18 +27,18 @@ def getChallenge(method: str, cert: Certificate, user_name: str=None) -> dict:
     message = {
         "type" : "CHALLENGE",
         "challenge" : None,
-        "certificate" : base64.b64encode(cert.public_bytes(Encoding.PEM)).decode()
+        "certificate" : base64.b64encode(cert.public_bytes(Encoding.DER)).decode()
     }
-
+    
     if method == "OTP":
         challenge = getChallengeOTP(user_name)
-    if method == "CERTIFICATE":
+    elif method == "CERTIFICATE":
         challenge = getChallengeNonce()
     else:
         challenge = None
     
     message["challenge"] = challenge
-    return response
+    return message
 
 
 def getChallengeOTP(user_name: str) -> dict:
@@ -64,12 +66,73 @@ def getChallengeNonce():
 
     return challenge
 
-def makeChallengeResponse(method: str) -> dict:
+def checkChallenge(message: dict):
+    certificate_bytes = base64.b64decode( message["certificate"].encode())
+    certificate = load_der_x509_certificate(certificate_bytes, default_backend())
+    if not certificate.subject in certificates.Certificates:
+        raise Exception("This is not the server certificate")
+
+    loaded_certificate = certificates.Certificates[certificate.subject]
+    c_fingerprint = certificates.fingerprint(certificate)
+    lc_fingerprint = certificates.fingerprint(loaded_certificate)
+    if c_fingerprint != lc_fingerprint:
+        raise Exception("This is not not equal to the loaded server certificate")
+ 
+
+def getChallengeResponse(method: str, message: dict, certificate: Certificate=None, dh_public_key: ec.EllipticCurvePublicKey=None, rsa_public_key: rsa.RSAPublicKey=None) -> dict:
+    r_message = {
+        "type" : "CHALLENGE_RESPONSE",
+        "response" : {},
+        "challenge" : getChallengeNonce()
+    }
+
+    challenge = message["challenge"]
+    server_certificate_bytes = base64.b64decode( message["certificate"].encode() )
+    server_certificate = load_der_x509_certificate(server_certificate_bytes, default_backend())
+    server_public_key = server_certificate.public_key()
+
+    if method == "OTP":
+        response = getResponseOTP(challenge,dh_public_key,rsa_public_key)
+    elif method == "CERTIFICATE":
+        response = getResponseNonce(challenge, certificate)
+    else:
+        response = {}
+    
+    response_json = json.dumps(response).encode()
+    cyphered_response = assymetric_encryption.encrypt(server_public_key, response_json)
+    r_message["response"] = base64.b64encode(cyphered_response).decode()
+
+    return r_message
+
+def getResponseOTP(challenge: dict, dh_public_key: ec.EllipticCurvePublicKey=None, rsa_public_key: rsa.RSAPublicKey=None) -> dict:
+    response = {
+        "otp" : '',
+        "dh_public_bytes" : '',
+        "rsa_public_bytes" : ''
+    }
+    password = input(" - Password: ").encode()
+
+    indice = challenge["indice"]
+    root = base64.b64decode( challenge["root"].encode())
+    otp = produce_otp(password, root, indice-1)
+
+    dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
+    rsa_public_bytes = assymetric_encryption.getPublicBytesFromKey(rsa_public_key)
+
+    response["otp"] = base64.b64encode(otp).decode()
+    response["dh_public_bytes"] = base64.b64encode(dh_public_bytes).decode()
+    response["rsa_public_bytes"] = base64.b64encode(rsa_public_bytes).decode()
+
+    return response
+
+
+def getResponseNonce(challenge: dict, certificate: Certificate) -> dict:
     pass
 
 
 def checkResponse(method: str, response: dict) -> dict:
     pass
+
 
 def checkSuccess():
     pass
@@ -237,6 +300,12 @@ def register_user():
     write_permission = input("Has write permission: ") == "yes"
     make_user(username, password, write_permission)
 
+############################################################################################
+#                                                                                          #
+# TEST CODE                                                                                #
+#                                                                                          #
+############################################################################################
+
 def test():
     load_users()
     print(f" - Users: {USERS}")
@@ -259,6 +328,25 @@ def test():
     print(f" - User after check: {user}")
     user = load_user(f"{USER_DIRECTORY}{username}.user")
     print(f" - File after check: {user}")
+
+    server_cert = certificates.load_cert("server.cert.pem")
+    chall_message = getChallenge("OTP", server_cert, username)
+    client_priv_bytes,client_pub_bytes = assymetric_encryption.generateAssymetricKey()
+    client_priv_key = assymetric_encryption.getPrivateKeyFromBytes(client_priv_bytes)
+    client_pub_key = assymetric_encryption.getPublicKeyFromBytes(client_pub_bytes)
+    dh_priv_key, dh_pub_key = handshake_ec.generateKeyPair()
+
+    print(f" - Challenge Message: {chall_message}")
+    checkChallenge(chall_message)
+    chall_response = getChallengeResponse("OTP", chall_message, dh_public_key=dh_pub_key, rsa_public_key=client_pub_key)
+    
+    print(f" - Challenge Response: {chall_response}")
+
+############################################################################################
+#                                                                                          #
+# MAIN CODE                                                                                #
+#                                                                                          #
+############################################################################################
 
 if __name__ == "__main__":
     args = get_args()
