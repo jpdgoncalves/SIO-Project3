@@ -8,13 +8,15 @@ import symmetric_encryption
 import assymetric_encryption
 import handshake_ec
 import secure
+import authentication
+import certificates
 from hmac_generator import buildHMAC
 
 logger = logging.getLogger('root')
 
 STATE_CONNECT = 0
-STATE_NEGOTIATE = 1
-STATE_EXCHANGE = 2
+STATE_AUTH = 1
+STATE_WAITING = 2
 STATE_OPEN = 3
 STATE_DATA = 4
 STATE_ROTATE = 5
@@ -23,13 +25,14 @@ STATE_CLOSE = 6
 CIPHER_ALGORITHM = "AES"
 CIPHER_MODE = "CBC"
 DIGEST_ALGORITHM = "sha512"
+AUTH_METHOD = "OTP"
 
 class ClientProtocol(asyncio.Protocol):
     """
     Client that handles a single client
     """
 
-    def __init__(self, file_name, loop):
+    def __init__(self, file_name, auth_method, user_name, loop):
         """
         Default constructor
         :param file_name: Name of the file to send
@@ -37,6 +40,7 @@ class ClientProtocol(asyncio.Protocol):
         """
 
         self.file_name = file_name
+        self.user_name = user_name
         self.file = None
         self.loop = loop
         self.state = STATE_CONNECT  # Initial State
@@ -46,15 +50,16 @@ class ClientProtocol(asyncio.Protocol):
         self.cipher_algorithm = CIPHER_ALGORITHM
         self.cipher_mode = CIPHER_MODE
         self.digest_algorithm = DIGEST_ALGORITHM
+        self.auth_method = auth_method
 
         self.complete = False
         self.exchange_priv_key = None
         self.exchange_shared_key = None
         self.own_apriv_key = None
-        self.server_apublic_key = None 
-        self.oak_filename = "client_private_key.pem"
-        self.sak_filename = "server_public_key.pem"
-
+        self.server_apublic_key = None
+        self.server_cert = None 
+        
+        self.nonce = None
         self.read_size = 1024
         self.read_bytes_to_rotate = self.read_size * 1024 * 2
         self.total_read_bytes = 0
@@ -67,14 +72,10 @@ class ClientProtocol(asyncio.Protocol):
         :return: No return
         """
 
-        with open(self.oak_filename,"rb") as oak_file, open(self.sak_filename,"rb") as sak_file:
-            self.own_apriv_key = assymetric_encryption.getPrivateKeyFromBytes(oak_file.read())
-            self.server_apublic_key = assymetric_encryption.getPublicKeyFromBytes(sak_file.read()) 
-
         self.transport = transport
         self.state = STATE_CONNECT
         logger.debug('Connected to Server')
-        self.send_negotiation_string()
+        self.send_authentication_request()
 
 
     def data_received(self, data: str) -> None:		#Override from asyncio.Protocol
@@ -124,10 +125,10 @@ class ClientProtocol(asyncio.Protocol):
         mtype = message.get('type', None)
         error = True
 
-        if mtype == "OK":
-            error = self.process_ok(message)
-        elif mtype == "EXCHANGE":
-            error = self.process_exchange(message)
+        if mtype == "CHALLENGE":
+            error = self.process_challenge(message)
+        elif mtype == "SUCCESS":
+            error = self.process_success(message)
         elif mtype == "SECURE":
             error = self.process_secure(message)
         elif mtype == "ERROR":
@@ -157,16 +158,56 @@ class ClientProtocol(asyncio.Protocol):
         self.transport.close()
         self.loop.stop()
     
-    def process_ok(self, message: dict) -> bool:
-        logger.info("Processing ok message (unsecure context).")
 
-        if self.state != STATE_NEGOTIATE:
-            logger.warn("Invalid state for this message")
+    def process_challenge(self, message: dict) -> bool:
+
+        if self.state != STATE_AUTH:
+            logger.warn("Invalid state for accepting challenge. Closing connection")
             return True
         
-        self.send_exchange()
+        try:
+            authentication.checkChallenge(message)
+        except Exception as e:
+            logger.warn(e)
+            return True
+        
+        certificate_bytes = base64.b64decode(message["certificate"].encode())
+        self.certificate = certificates.load_cert(certificate_bytes)
+        self.server_apublic_key = self.certificate.public_key()
 
+        own_apriv_bytes, own_apub_bytes = assymetric_encryption.generateAssymetricKey()
+        self.own_apriv_key = assymetric_encryption.getPrivateKeyFromBytes(own_apriv_bytes)
+        own_apub_key = assymetric_encryption.getPublicKeyFromBytes(own_apub_bytes)
+
+        exchange_priv_key, exchange_public_key = handshake_ec.generateKeyPair()
+        self.exchange_priv_key = exchange_priv_key
+
+        response = authentication.getChallengeResponse(self.auth_method, message, exchange_public_key, own_apub_key)
+
+        self.nonce = base64.b64decode(response["challenge"]["nonce"].encode())
+        self.state = STATE_WAITING
+        self._send(response)
         return False
+
+
+    def process_success(self, message: dict) -> bool:
+        
+        if self.state != STATE_WAITING:
+            logger.warn("Invalid state to process sucessful authentication. Closing connection!")
+            return True
+        
+        response = message["response"]
+
+        if not authentication.checkResponseNonce(response, self.nonce, self.server_apublic_key):
+            logger.warn("Unable to authenticate server")
+            return True
+        
+        dh_public_bytes = base64.b64decode(response["dh_public_bytes"].encode())
+        dh_public_key = handshake_ec.buildPeerPublicKey(dh_public_bytes)
+        self.exchange_shared_key = handshake_ec.deriveSharedKey(self.exchange_priv_key, dh_public_key)
+        self.send_file_open()
+        return False
+
 
     def process_exchange(self, message: dict) -> bool:
         logger.info("Processing exchange message.")
@@ -226,32 +267,17 @@ class ClientProtocol(asyncio.Protocol):
 
         return self.send_file_data()
     
-    def send_negotiation_string(self):
-        logger.info("Sending negotiation string.")
 
+    def send_authentication_request(self):
         message = {
-            "type" : "NEGOTIATE",
+            "type" : "AUTHENTICATION",
+            "user" : self.user_name,
+            "method" : self.auth_method,
             "proposal" : self._get_proposal()
         }
-
-        self.state = STATE_NEGOTIATE
+        self.state = STATE_AUTH
         self._send(message)
-    
-    def send_exchange(self):
-        logger.info("Sending an Exchange message.")
 
-        message = {
-            "type" : "EXCHANGE",
-            "peer_key" : None
-        }
-
-        exchange_priv_key, exchange_public_key = handshake_ec.generateKeyPair()
-        exchange_public_bytes = handshake_ec.getPeerPublicBytesFromKey(exchange_public_key)
-        message["peer_key"] = base64.b64encode(exchange_public_bytes).decode()
-
-        self.exchange_priv_key = exchange_priv_key
-        self.state = STATE_EXCHANGE
-        self._send(message)
     
     def send_file_open(self):
         logger.info("Sending an Open message.")
@@ -398,13 +424,16 @@ def main():
     port = args.port
     server = args.server
 
+    user_name = input("User: ")
+    auth_method = input("Auth method: ")
+
     coloredlogs.install(level)
     logger.setLevel(level)
 
     logger.info("Sending file: {} to {}:{} LogLevel: {}".format(file_name, server, port, level))
 
     loop = asyncio.get_event_loop()
-    coro = loop.create_connection(lambda: ClientProtocol(file_name, loop),
+    coro = loop.create_connection(lambda: ClientProtocol(file_name, auth_method, user_name, loop),
                                   server, port)
     loop.run_until_complete(coro)
     loop.run_forever()

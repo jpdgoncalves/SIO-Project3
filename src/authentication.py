@@ -100,7 +100,7 @@ def getChallengeResponse(method: str, message: dict, dh_public_key: ec.EllipticC
         dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
         rsa_public_bytes = assymetric_encryption.getPublicBytesFromKey(rsa_public_key)
         response["dh_public_bytes"] = base64.b64encode(dh_public_bytes).decode()
-        response["rsa_public_key"] = base64.b64encode(rsa_public_bytes).decode()
+        response["rsa_public_bytes"] = base64.b64encode(rsa_public_bytes).decode()
     else:
         response = {}
     
@@ -172,7 +172,7 @@ def getSucessFailure(method: str, user_name: dict, message: dict, rsa_private_ke
         r_type = "SUCCESS"
         response = getResponseNonce(challenge, rsa_private_key)
     else:
-        r_type = "FAILURE"
+        r_type = "ERROR"
         response = {}
     
     dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)

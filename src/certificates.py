@@ -4,7 +4,7 @@ from urllib import request
 
 from datetime import datetime,timedelta
 from cryptography import x509
-from cryptography.x509 import NameOID,NameAttribute,Name,SubjectAlternativeName,DNSName,CertificateBuilder
+from cryptography.x509 import NameOID,NameAttribute,Name,SubjectAlternativeName,DNSName,CertificateBuilder,Certificate
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_public_key,Encoding,PrivateFormat,NoEncryption
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -31,24 +31,29 @@ def is_cert_date_valid(cert):
     now = datetime.now()
     return cert.not_valid_before < now and now < cert.not_valid_after
 
-def load_cert(filepath):
+
+def load_cert(cert_bytes: bytes) -> Certificate:
+    cert = None
+    if b"-----BEGIN CERTIFICATE-----" in cert_bytes:
+        if DEBUG: print(" - This is a PEM Certificate. Attempting to load.")
+        cert = x509.load_pem_x509_certificate(
+            cert_bytes,
+            default_backend()
+        )
+    else:
+        if DEBUG: print(" - Likely a DER certificate. Attempting to load.")
+        cert = x509.load_der_x509_certificate(
+            cert_bytes,
+            default_backend()
+        )
+    return cert
+
+def load_cert_file(filepath):
     cert = None
 
     with open(filepath, "rb")as cert_file:
         cert_data = cert_file.read()
-
-        if b"-----BEGIN CERTIFICATE-----" in cert_data:
-            if DEBUG: print(" - This is a PEM Certificate. Attempting to load.")
-            cert = x509.load_pem_x509_certificate(
-                cert_data,
-                default_backend()
-            )
-        else:
-            if DEBUG: print(" - Likely a DER certificate. Attempting to load.")
-            cert = x509.load_der_x509_certificate(
-                cert_data,
-                default_backend()
-            )
+        cert = load_cert(cert_data)
     if DEBUG: print(" - Certificate loaded.")
     return cert
 
@@ -66,7 +71,7 @@ def load_trust_anchors():
             if DEBUG: print(f" - {entry.path} is a file")
 
             try:
-                cert = load_cert(entry.path)
+                cert = load_cert_file(entry.path)
                 if is_cert_date_valid(cert):
                     Certificates[cert.subject] = cert
                     if DEBUG: print(f" - {entry.path} has a valid date. Registering")
@@ -89,7 +94,7 @@ def load_local_certs(directory_path):
             if DEBUG: print(f" - {entry.path} is a file")
 
             try:
-                cert = load_cert(entry.path)
+                cert = load_cert_file(entry.path)
 
                 if DEBUG: print(f" - {entry.path} is a certificate")
 
@@ -224,7 +229,7 @@ def test():
 
     filepath = input("path to the certificate you wish to load: ")
 
-    cert = load_cert(filepath)
+    cert = load_cert_file(filepath)
     is_valid = is_cert_date_valid(cert)
     Certificates[cert.subject] = cert
     load_trust_anchors()
