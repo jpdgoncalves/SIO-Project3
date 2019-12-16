@@ -238,6 +238,14 @@ class ClientHandler(asyncio.Protocol):
         if not 'file_name' in message:
             logger.warning("No filename in Open")
             return True
+        
+        if not authentication.USERS[self.user_name]["write_permission"]:
+            response = {
+                "type" : "Error",
+                "message" : f"User({self.user_name}) does not have write permissions"
+            }
+            self._send(response)
+            return False
 
         # Only chars and letters in the filename
         file_name = re.sub(r'[^\w\.]', '', message['file_name'])
