@@ -17,7 +17,7 @@ def buildDigestFunction(algorithm_name = "sha512",backend = default_backend()):
         raise ValueError(f"{algorithm_name} is not supported")
 
     algorithm = SUPPORTED_HASHES[algorithm_name]()
-
+    
     return hashes.Hash(algorithm,backend)
 
 def generateAssymetricKey():
@@ -68,14 +68,14 @@ def getPublicKeyFromBytes(public_bytes: bytes) -> rsa.RSAPublicKey:
         backend=default_backend()
     )
 
-def getSignature(private_key: rsa.RSAPrivateKey, data: bytes, padding: AsymmetricPadding=PKCS1v15(), algorithm: HashAlgorithm=buildDigestFunction()) -> bytes:
+def getSignature(private_key: rsa.RSAPrivateKey, data: bytes, padding: AsymmetricPadding=PKCS1v15(), algorithm: HashAlgorithm=hashes.SHA512()) -> bytes:
     return private_key.sign(
         data,
         padding,
         algorithm
     )
 
-def verifySignature(public_key: rsa.RSAPublicKey, signature: bytes, data: bytes, padding: AsymmetricPadding=PKCS1v15(), algorithm: HashAlgorithm=buildDigestFunction()) -> bool:
+def verifySignature(public_key: rsa.RSAPublicKey, signature: bytes, data: bytes, padding: AsymmetricPadding=PKCS1v15(), algorithm: HashAlgorithm=hashes.SHA512()) -> bool:
     try:
         public_key.verify(signature,data,padding,algorithm)
     except InvalidSignature:

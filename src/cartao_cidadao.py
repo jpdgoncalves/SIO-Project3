@@ -17,12 +17,11 @@ def get_cc_slot():
             return slot
     return None
 
-def sign_with_cc(text):
+def sign_with_cc(text_bytes) -> bytes:
     slot = get_cc_slot()
     session = pkcs11.openSession(slot)
     mechanism = PyKCS11.Mechanism(CKM_SHA1_RSA_PKCS, None)
     priv_key_obj = session.findObjects([(CKA_CLASS, CKO_PRIVATE_KEY),(CKA_LABEL, 'CITIZEN AUTHENTICATION KEY')])[0]
-    text_bytes = bytes(text,"utf-8")
     signature = bytes(session.sign(priv_key_obj, text_bytes, mechanism))
     session.closeSession()
     return signature
@@ -36,7 +35,7 @@ def load_cert_auth_cc():
     session.closeSession()
     return (certificate,certificate_bytes)
 
-def verify_signature_cc(text,signature,cert = None):
+def verify_signature_cc(text_bytes,signature,cert = None):
     slot = get_cc_slot()
     session = pkcs11.openSession(slot)
     cert = load_cert_auth_cc()[0] if cert == None else cert
@@ -45,7 +44,7 @@ def verify_signature_cc(text,signature,cert = None):
     try:
         public_key.verify(
             signature,
-            bytes(text,"utf-8"),
+            text_bytes,
             padding.PKCS1v15(),
             hashes.SHA1()
         )
@@ -57,10 +56,10 @@ def verify_signature_cc(text,signature,cert = None):
         return result
 
 if __name__ == "__main__":
-    text = input("Um texto para ser assinado: ")
-    signature = sign_with_cc(text)
+    text_bytes = input("Um texto para ser assinado: ").encode()
+    signature = sign_with_cc(text_bytes)
     print(f"Signature: {signature}")
-    is_valid = verify_signature_cc(text,signature)
+    is_valid = verify_signature_cc(text_bytes,signature)
     print("is valid: ", is_valid)
     _,certificate_bytes = load_cert_auth_cc()
     print(f"Certificate: {certificate_bytes}")

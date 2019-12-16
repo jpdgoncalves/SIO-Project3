@@ -59,12 +59,14 @@ def getChallengeOTP(user_name: str) -> dict:
 
     return challenge
 
+
 def getChallengeNonce():
     challenge = {
         "nonce" : base64.b64encode(os.urandom(32)).decode()
     }
 
     return challenge
+
 
 def checkChallenge(message: dict):
     certificate_bytes = base64.b64decode( message["certificate"].encode())
@@ -79,7 +81,7 @@ def checkChallenge(message: dict):
         raise Exception("This is not not equal to the loaded server certificate")
  
 
-def getChallengeResponse(method: str, message: dict, certificate: Certificate=None, dh_public_key: ec.EllipticCurvePublicKey=None, rsa_public_key: rsa.RSAPublicKey=None) -> dict:
+def getChallengeResponse(method: str, message: dict, dh_public_key: ec.EllipticCurvePublicKey=None, rsa_public_key: rsa.RSAPublicKey=None) -> dict:
     r_message = {
         "type" : "CHALLENGE_RESPONSE",
         "response" : {},
@@ -94,15 +96,19 @@ def getChallengeResponse(method: str, message: dict, certificate: Certificate=No
     if method == "OTP":
         response = getResponseOTP(challenge,dh_public_key,rsa_public_key)
     elif method == "CERTIFICATE":
-        response = getResponseNonce(challenge, certificate)
+        response = getResponseCC(challenge)
+        dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
+        rsa_public_bytes = assymetric_encryption.getPublicBytesFromKey(rsa_public_key)
+        response["dh_public_bytes"] = base64.b64encode(dh_public_bytes).decode()
+        response["rsa_public_key"] = base64.b64encode(rsa_public_bytes).decode()
     else:
         response = {}
     
-    response_json = json.dumps(response).encode()
-    cyphered_response = assymetric_encryption.encrypt(server_public_key, response_json)
-    r_message["response"] = base64.b64encode(cyphered_response).decode()
+    
+    r_message["response"] = response
 
     return r_message
+
 
 def getResponseOTP(challenge: dict, dh_public_key: ec.EllipticCurvePublicKey=None, rsa_public_key: rsa.RSAPublicKey=None) -> dict:
     response = {
@@ -126,22 +132,83 @@ def getResponseOTP(challenge: dict, dh_public_key: ec.EllipticCurvePublicKey=Non
     return response
 
 
-def getResponseNonce(challenge: dict, certificate: Certificate) -> dict:
-    pass
+def getResponseCC(challenge: dict) -> dict:
+    response = {
+        "signature" : ''
+    }
+
+    nonce = base64.b64decode(challenge["nonce"].encode())
+    signature = cartao_cidadao.sign_with_cc(nonce)
+
+    response["signature"] = base64.b64encode(signature).decode()
+    return response
 
 
-def checkResponse(method: str, response: dict) -> dict:
-    pass
+def getResponseNonce(challenge: dict, rsa_private_key: rsa.RSAPrivateKey) -> dict:
+    response = {
+        "signature" : ''
+    }
+
+    nonce = base64.b64decode(challenge["nonce"].encode())
+    signature = assymetric_encryption.getSignature(rsa_private_key, nonce)
+    
+    response["signature"] = base64.b64encode(signature).decode()
+    return response
 
 
-def checkSuccess():
-    pass
+def getSucessFailure(method: str, user_name: dict, message: dict, rsa_private_key: rsa.RSAPrivateKey, dh_public_key: ec.EllipticCurvePublicKey, nonce: bytes=None) -> dict:
+    r_message = {
+        "type" : "SUCESS",
+        "response" : {}
+    }
+
+    challenge_response = message["response"]
+    challenge = message["challenge"]
+
+    if method == "OTP" and checkResponseOTP(challenge_response, user_name):
+        r_type = "SUCCESS"
+        response = getResponseNonce(challenge, rsa_private_key)
+    elif method == "CERTIFICATE" and checkResponseCertificate(challenge_response, user_name, nonce):
+        r_type = "SUCCESS"
+        response = getResponseNonce(challenge, rsa_private_key)
+    else:
+        r_type = "FAILURE"
+        response = {}
+    
+    dh_public_bytes = handshake_ec.getPeerPublicBytesFromKey(dh_public_key)
+    response["dh_public_bytes"] = base64.b64encode(dh_public_bytes).decode()
+
+    r_message["type"] = r_type
+    r_message["response"] = response
+    return r_message
+
+
+def checkResponseOTP(response: dict, user_name: str) -> bool:
+    
+    otp_to_check = base64.b64decode(response["otp"].encode())
+
+    return otp_check(user_name, otp_to_check)
+
+
+def checkResponseCertificate(response: dict, user_name: str, nonce: bytes) -> bool:
+    user = USERS[user_name]
+    certificate = user["certificate"]
+    signature = base64.b64decode(response["signature"].encode())
+
+    return cartao_cidadao.verify_signature_cc(nonce, signature, certificate)
+
+
+def checkResponseNonce(response: dict, nonce: bytes, rsa_public_key: rsa.RSAPublicKey) -> bool:
+    signature = base64.b64decode(response["signature"].encode())
+    return assymetric_encryption.verifySignature(rsa_public_key, signature, nonce)
+
 
 ############################################################################################
 #                                                                                          #
 # OTP CODE                                                                                 #
 #                                                                                          #
 ############################################################################################
+
 
 def otp_matches(current_otp: bytes, otp_to_check: bytes) -> bool:
     digest_func = assymetric_encryption.buildDigestFunction()
@@ -311,6 +378,7 @@ def test():
     print(f" - Users: {USERS}")
     username = input(" - Username: ")
     password = input(f" - Password to check against user({username}): ")
+    auth_method = input(" - Authentication method: ").upper()
 
     user = USERS[username]
     current_otp = user["current_otp"]
@@ -330,17 +398,35 @@ def test():
     print(f" - File after check: {user}")
 
     server_cert = certificates.load_cert("server.cert.pem")
-    chall_message = getChallenge("OTP", server_cert, username)
+    with open("server.key.pem","rb") as server_key_file:
+        server_private_key = assymetric_encryption.getPrivateKeyFromBytes(server_key_file.read())
+    chall_message = getChallenge(auth_method, server_cert, username)
+
     client_priv_bytes,client_pub_bytes = assymetric_encryption.generateAssymetricKey()
     client_priv_key = assymetric_encryption.getPrivateKeyFromBytes(client_priv_bytes)
     client_pub_key = assymetric_encryption.getPublicKeyFromBytes(client_pub_bytes)
     dh_priv_key, dh_pub_key = handshake_ec.generateKeyPair()
+    dh_server_priv_key, dh_server_pub_key = handshake_ec.generateKeyPair()
 
     print(f" - Challenge Message: {chall_message}")
     checkChallenge(chall_message)
-    chall_response = getChallengeResponse("OTP", chall_message, dh_public_key=dh_pub_key, rsa_public_key=client_pub_key)
+    chall_response = getChallengeResponse(auth_method, chall_message, dh_public_key=dh_pub_key, rsa_public_key=client_pub_key)
     
     print(f" - Challenge Response: {chall_response}")
+
+    nonce = base64.b64decode(chall_message["challenge"]["nonce"].encode()) if auth_method == "CERTIFICATE" else None
+    success_response = getSucessFailure(auth_method, username, chall_response, server_private_key, dh_server_pub_key, nonce)
+
+    print(f" - Challenge Response: {success_response}")
+
+    challenge = chall_response["challenge"]
+    response = success_response["response"]
+    nonce = base64.b64decode(challenge["nonce"].encode())
+    is_success_valid = checkResponseNonce(response, nonce ,server_cert.public_key())
+
+    print(f" - Is success valid: {is_success_valid}")
+
+    
 
 ############################################################################################
 #                                                                                          #
